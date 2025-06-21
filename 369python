@@ -1,31 +1,36 @@
-tpd_field_checker_step1.py
+# tpd_field_checker_step1.py
 
 import pandas as pd
 
----------------------------
-
-Configuration
-
----------------------------
-
+# ---------------------------
+# Configuration
+# ---------------------------
 RUN_CSV_PATH = r"C:\Input\Run.csv"
 
----------------------------
+# ---------------------------
+# Function to read Run.csv
+# ---------------------------
+def read_run_csv(path):
+    """
+    Reads the Run.csv file without assuming a header,
+    prints its shape and first few rows for inspection.
+    """
+    try:
+        df = pd.read_csv(path, header=None)
+        print(f"Loaded Run.csv with shape: {df.shape}")
+        print(df.head())
+        return df
+    except Exception as e:
+        print(f"Error reading {path}: {e}")
+        return None
 
-Function to read Run.csv
+# ---------------------------
+# Main
+# ---------------------------
+def main():
+    df = read_run_csv(RUN_CSV_PATH)
+    if df is None:
+        print("Failed to load Run.csv. Please check the path and file format.")
 
----------------------------
-
-def read_run_csv(path): """ Reads the Run.csv file without assuming a header, prints its shape and first few rows for inspection. """ try: df = pd.read_csv(path, header=None) print(f"Loaded Run.csv with shape: {df.shape}") print(df.head()) return df except Exception as e: print(f"Error reading {path}: {e}") return None
-
----------------------------
-
-Main
-
----------------------------
-
-def main(): df = read_run_csv(RUN_CSV_PATH) if df is None: print("Failed to load Run.csv. Please check the path and file format.")
-
-if name == "main": main()
-
-
+if __name__ == "__main__":
+    main()
