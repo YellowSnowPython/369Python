@@ -1,149 +1,133 @@
-# tpd_field_checker.py
+# debug_tpd_field_checker.py
 
 import os
 import pandas as pd
+import traceback
 from datetime import datetime
 
-# ---------------------------
-# Configuration
-# ---------------------------
-RUN_CSV_PATH    = r"C:\Input\Run.csv"
-FILES_DIRECTORY = r"C:\Files\Located"
-OUTPUT_DIRECTORY = r"C:\Files\Located"
-DATE_SUFFIX    = datetime.now().strftime("%m-%d")
+# — Configuration —
+RUN_CSV_PATH     = r"C:\Input\Run.csv"
+FILES_DIRECTORY  = r"C:\Files\Located"
+OUTPUT_DIRECTORY = r"C:\Files\Located\Output"   # put outputs in a subfolder
+DATE_SUFFIX      = datetime.now().strftime("%m-%d")
 
-# ---------------------------
-# Utility Functions
-# ---------------------------
+# — Utility —
 def read_csv_safely(path, header=None):
-    """
-    Read a CSV, returning an empty DataFrame on failure.
-    If header=None, pandas will treat every row as data.
-    """
     try:
-        return pd.read_csv(path, header=header)
+        print(f"[DEBUG] Reading CSV: {path} (header={header})")
+        df = pd.read_csv(path, header=header)
+        print(f"[DEBUG] ► shape = {df.shape}")
+        return df
     except Exception as e:
-        print(f"Error reading {path}: {e}")
+        print(f"[ERROR] reading {path}: {e}")
+        traceback.print_exc()
         return pd.DataFrame()
 
-# ---------------------------
-# Data Loading
-# ---------------------------
+# — Load Run.csv —
 def load_run_csv():
-    # If your Run.csv has no header row, keep header=None; 
-    # otherwise remove header=None and let pandas infer the header.
     df = read_csv_safely(RUN_CSV_PATH, header=None)
     if df.empty:
-        print("Run.csv is empty or missing.")
+        print("[ERROR] Run.csv came back empty or failed to load.")
         return [], {}, pd.DataFrame()
 
-    # Debug info
-    print(f"Loaded Run.csv: {df.shape[0]} rows × {df.shape[1]} cols")
+    print(f"[INFO] Loaded Run.csv: {df.shape[0]} rows × {df.shape[1]} cols")
+    print(df.head(5))
 
-    # Column 1 (zero-based idx 1) from row 1 downwards are your TPD field names
+    # Extract lists
     tpd_fields = df.iloc[1:, 1].dropna().astype(str).tolist()
+    headers    = df.iloc[0, 3:23].dropna().astype(str).tolist()
+    file_map   = {hdr: f"{hdr}.csv" for hdr in headers}
 
-    # Row 0, cols 3–22 are your file “headers”
-    headers = df.iloc[0, 3:23].dropna().astype(str).tolist()
-    file_map = {hdr: f"{hdr}.csv" for hdr in headers}
-
-    # Build the mapping between TPD fields (rows) and actual CSV column names (cells)
     field_mapping = df.iloc[1:, 3:3 + len(headers)].copy()
     field_mapping.columns = headers
     field_mapping.index   = tpd_fields
 
-    # More debug
-    print("TPD fields:", tpd_fields)
-    print("File map:", file_map)
-    print("Field mapping (first 5 rows):\n", field_mapping.head())
+    print(f"[DEBUG] TPD fields ({len(tpd_fields)}): {tpd_fields}")
+    print(f"[DEBUG] File map: {file_map}")
+    print("[DEBUG] Field mapping sample:")
+    print(field_mapping.head())
 
     return tpd_fields, file_map, field_mapping
 
-# ---------------------------
-# Core Logic
-# ---------------------------
+# — Evaluate one file —
 def evaluate_file(file_path, tpd_fields, file_name, field_mapping):
-    """
-    For each expected TPD field, check:
-     - If there’s a mapping for this file → actual_field
-     - If actual_field exists as a column in df
-     - How many rows are non-NA versus total
-    """
     df = read_csv_safely(file_path)
-    if df.empty or df.shape[1] < 1:
-        # no data to inspect
+    if df.empty:
         return ["N/A"] * len(tpd_fields)
 
-    # Count how many “data rows” you have in column 0
     total_entries = df.iloc[1:, 0].dropna().shape[0]
-    results = []
+    print(f"[INFO] Evaluating {file_name}: total_entries = {total_entries}")
 
+    results = []
     for field in tpd_fields:
         try:
             actual_field = field_mapping.at[field, file_name]
         except KeyError:
             actual_field = None
 
-        # If there was no cell in the mapping Excel
+        print(f"  → TPD field '{field}' maps to '{actual_field}'")
+
         if pd.isna(actual_field) or not actual_field:
             results.append("Field Missing")
             continue
 
-        # If the mapped column exists in the data
-        if actual_field in df.columns:
+        if actual_field not in df.columns:
+            print(f"    [WARN] Column '{actual_field}' not in file columns {list(df.columns)}")
+            results.append("Field Missing")
+        else:
             filled = df[actual_field].dropna().shape[0]
+            print(f"    [DEBUG] column '{actual_field}' has {filled}/{total_entries} filled")
             if filled == total_entries:
                 results.append("Included")
             elif filled > 0:
                 results.append("Inconsistent – partial data")
             else:
                 results.append("All blank")
-        else:
-            results.append("Field Missing")
     return results
 
-# ---------------------------
-# Output Writer
-# ---------------------------
+# — Save output —
 def save_result_csv(header, tpd_fields, results):
-    """
-    Saves a two-column CSV:
-     • TPD Field Name
-     • Results*
-    """
-    output_df = pd.DataFrame({
+    out_dir = os.path.join(OUTPUT_DIRECTORY)
+    os.makedirs(out_dir, exist_ok=True)
+    out_file = os.path.join(out_dir, f"{DATE_SUFFIX} - {header}.csv")
+    print(f"[INFO] Writing result to: {out_file}")
+    pd.DataFrame({
         "TPD Field Name": tpd_fields,
         "Results*":        results
-    })
-    os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
-    # ensure we get a .csv extension
-    out_file = os.path.join(OUTPUT_DIRECTORY, f"{DATE_SUFFIX} - {header}.csv")
-    output_df.to_csv(out_file, index=False)
-    print(f"Wrote results to {out_file}")
+    }).to_csv(out_file, index=False)
 
-# ---------------------------
-# Main Entry Point
-# ---------------------------
+# — Main —
 def main():
-    tpd_fields, file_map, field_mapping = load_run_csv()
-    if not tpd_fields or not file_map:
-        print("No data found in Run.csv.")
-        return
+    print("[START] tpd_field_checker")
+    try:
+        tpd_fields, file_map, field_mapping = load_run_csv()
+        if not tpd_fields or not file_map:
+            print("[ERROR] No fields or files to process; exiting.")
+            return
 
-    for header, file_name in file_map.items():
-        file_path = os.path.join(FILES_DIRECTORY, file_name)
-        if not os.path.exists(file_path):
-            print(f"Missing file: {file_path}")
-            results = ["N/A"] * len(tpd_fields)
-        else:
-            try:
-                results = evaluate_file(file_path, tpd_fields, header, field_mapping)
-            except Exception as e:
-                print(f"Error evaluating {file_name}: {e}")
-                results = ["Error"] * len(tpd_fields)
+        # list directory to confirm files exist
+        print(f"[DEBUG] Files dir listing ({FILES_DIRECTORY}):")
+        for f in os.listdir(FILES_DIRECTORY):
+            print("   ", f)
 
-        save_result_csv(header, tpd_fields, results)
+        for header, file_name in file_map.items():
+            file_path = os.path.join(FILES_DIRECTORY, file_name)
+            if not os.path.exists(file_path):
+                print(f"[WARN] Missing file: {file_path}")
+                results = ["N/A"] * len(tpd_fields)
+            else:
+                try:
+                    results = evaluate_file(file_path, tpd_fields, header, field_mapping)
+                except Exception as e:
+                    print(f"[ERROR] evaluating {file_name}: {e}")
+                    traceback.print_exc()
+                    results = ["Error"] * len(tpd_fields)
 
+            save_result_csv(header, tpd_fields, results)
+
+    except Exception as e:
+        print(f"[FATAL] Unexpected error: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
