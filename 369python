@@ -1,11 +1,13 @@
-# tpd_field_checker_step1.py
+# tpd_field_checker_step2.py
 
+import os
 import pandas as pd
 
 # ---------------------------
 # Configuration
 # ---------------------------
-RUN_CSV_PATH = r"C:\Input\Run.csv"
+RUN_CSV_PATH    = r"C:\Input\Run.csv"
+FILES_DIRECTORY = r"C:\Files\Located"
 
 # ---------------------------
 # Function to read Run.csv
@@ -13,7 +15,7 @@ RUN_CSV_PATH = r"C:\Input\Run.csv"
 def read_run_csv(path):
     """
     Reads the Run.csv file without assuming a header,
-    prints its shape and first few rows for inspection.
+    returns a DataFrame or None on failure.
     """
     try:
         df = pd.read_csv(path, header=None)
@@ -25,12 +27,57 @@ def read_run_csv(path):
         return None
 
 # ---------------------------
+# Function to parse Run.csv DataFrame
+# ---------------------------
+def parse_run_df(df):
+    """
+    From the raw DataFrame, extract:
+     - tpd_fields: list of field names (column 1, rows 1:)
+     - headers: list of file headers (row 0, cols 3:23)
+     - file_map: dict mapping header -> filename (.csv)
+     - field_mapping: DataFrame of mappings
+    """
+    if df is None or df.empty:
+        print("Input DataFrame is empty. Cannot parse.")
+        return [], {}, None
+
+    tpd_fields = df.iloc[1:, 1].dropna().astype(str).tolist()
+    headers    = df.iloc[0, 3:23].dropna().astype(str).tolist()
+    file_map   = {hdr: f"{hdr}.csv" for hdr in headers}
+    field_mapping = df.iloc[1:, 3:3 + len(headers)].copy()
+    field_mapping.columns = headers
+    field_mapping.index   = tpd_fields
+
+    print(f"TPD Fields ({len(tpd_fields)}): {tpd_fields}")
+    print(f"File Map: {file_map}")
+    print("Field Mapping (first 5 rows):")
+    print(field_mapping.head())
+
+    return tpd_fields, file_map, field_mapping
+
+# ---------------------------
 # Main
 # ---------------------------
 def main():
+    # Step 1: read the run CSV
     df = read_run_csv(RUN_CSV_PATH)
-    if df is None:
-        print("Failed to load Run.csv. Please check the path and file format.")
+    # Step 2: parse into structures
+    tpd_fields, file_map, field_mapping = parse_run_df(df)
+
+    # Step 3: list actual files and preview
+    print("\nChecking file existence and previewing contents:")
+    for header, fname in file_map.items():
+        path = os.path.join(FILES_DIRECTORY, fname)
+        if os.path.exists(path):
+            print(f" - {fname} (header '{header}'): FOUND")
+            try:
+                preview = pd.read_csv(path)
+                print(f"   Preview {fname}: shape={preview.shape}")
+                print(preview.head(2))
+            except Exception as e:
+                print(f"   Error reading {fname}: {e}")
+        else:
+            print(f" - {fname} (header '{header}'): MISSING")
 
 if __name__ == "__main__":
     main()
