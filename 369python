@@ -1,4 +1,4 @@
-# tpd_field_checker_step4.py
+# 222tpd_field_checker_step4.py
 
 import os
 import pandas as pd
@@ -64,75 +64,4 @@ def parse_run_df(df):
     print(mapping_df.head())
 
     return tpd_fields, file_map, mapping_df
-
-# ---------------------------
-# Step 3: Evaluate each file
-# ---------------------------
-def evaluate_file(header, tpd_fields, file_map, field_mapping):
-    """
-    For a given header, opens its mapped file and checks each TPD field.
-    Returns list of statuses.
-    """
-    filename = file_map.get(header)
-    path = os.path.join(FILES_DIRECTORY, filename)
-    if not os.path.exists(path):
-        print(f"Missing file for header '{header}': {path}")
-        return ["Missing File"] * len(tpd_fields)
-
-    df = pd.read_csv(path, low_memory=False)
-    total = df.shape[0] - 1  # excluding header row
-    results = []
-    for field in tpd_fields:
-        # get column mapping or fallback to header name
-        col = None
-        if header in field_mapping.columns:
-            col = field_mapping.at[field, header]
-        if pd.isna(col) or not isinstance(col, str) or not col.strip():
-            # fallback to header as column name
-            col = header
-        # evaluate
-        if col not in df.columns:
-            results.append("Field Missing")
-        else:
-            filled = df[col].dropna().shape[0]
-            if filled == total:
-                results.append("Included")
-            elif filled > 0:
-                results.append("Partial")
-            else:
-                results.append("All Blank")
-    return results
-
-# ---------------------------
-# Step 4: Write results
-# ---------------------------
-def save_result_csv(header, tpd_fields, results):
-    os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
-    out_file = os.path.join(OUTPUT_DIRECTORY, f"{DATE_SUFFIX} - {header}.csv")
-    pd.DataFrame({
-        "TPD Field Name": tpd_fields,
-        "Result":        results
-    }).to_csv(out_file, index=False)
-    print(f"Saved results to {out_file}")
-
-# ---------------------------
-# Main
-# ---------------------------
-def main():
-    df = read_run_csv(RUN_CSV_PATH)
-    if df is None:
-        print("Failed to load Run.csv. Exiting.")
-        return
-
-    tpd_fields, file_map, field_mapping = parse_run_df(df)
-    print("\nEvaluating files...")
-    for header in file_map.keys():
-        print(f"\n== {header} ==")
-        results = evaluate_file(header, tpd_fields, file_map, field_mapping)
-        for fld, res in zip(tpd_fields, results):
-            print(f"  {fld}: {res}")
-        save_result_csv(header, tpd_fields, results)
-
-if __name__ == "__main__":
-    main()
 
