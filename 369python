@@ -1,141 +1,124 @@
-# tpd_field_checker.py
-
 import os
+import datetime
 import pandas as pd
 
-# ---------------------------
-# Configuration
-# ---------------------------
-RUN_CSV_PATH    = r"C:\Input\Run.csv"
-FILES_DIRECTORY = r"C:\Files\Located"
-OUTPUT_DIRECTORY = os.path.join(FILES_DIRECTORY, "Output")
+# you’ll need: pip install pandas xlsxwriter pywin32
+import xlsxwriter
+import win32com.client as win32
 
-# Prepare output directory: create if missing, else clear it
-if not os.path.exists(OUTPUT_DIRECTORY):
-    os.makedirs(OUTPUT_DIRECTORY)
-else:
-    for fn in os.listdir(OUTPUT_DIRECTORY):
-        fp = os.path.join(OUTPUT_DIRECTORY, fn)
-        if os.path.isfile(fp):
-            try:
-                os.remove(fp)
-            except Exception as e:
-                print(f"Warning: could not remove {fp}: {e}")
+# ---- CONFIGURATION ----
+OUTPUT_DIR       = r"C:\Files\Located\Output"
+SUMMARY_DIR      = r"C:\Final File"
+SUMMARY_FILENAME = "Summary File.xlsx"
+SUMMARY_PATH     = os.path.join(SUMMARY_DIR, SUMMARY_FILENAME)
 
-# ---------------------------
-# Read and parse Run.csv
-# ---------------------------
-def read_run_csv(path):
-    try:
-        return pd.read_csv(path, header=None, low_memory=False)
-    except Exception as e:
-        print(f"Error reading Run.csv: {e}")
-        return None
+TO_ADDRESSES = ["xxx@example.com", "yyy@example.com", "zzz@example.com"]
+CC_ADDRESSES = ["aaa@example.com", "bbb@example.com", "ccc@example.com"]
 
-def parse_run_df(df):
-    # Header labels for A and C (row 1)
-    header_A = str(df.iat[0,0])
-    header_C = str(df.iat[0,2])
+# ---- 1) COLLECT ALL CSVs INTO ONE DATAFRAME ----
+# find all CSV files
+csv_files = sorted(f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".csv"))
+if not csv_files:
+    raise RuntimeError(f"No CSV files found in {OUTPUT_DIR}")
 
-    # For each field row (row 2+):
-    #   Col A = required category
-    #   Col B = TPD field name
-    #   Col C = extra info
-    cats    = df.iloc[1:, 0].astype(str).tolist()
-    tpd_fld = df.iloc[1:, 1].dropna().astype(str).tolist()
-    extra   = df.iloc[1:, 2].astype(str).tolist()
+# read the first file to capture columns A, B, C as the “index”
+first_df = pd.read_csv(os.path.join(OUTPUT_DIR, csv_files[0]), dtype=str)
+index_cols = first_df.columns.tolist()[:3]  # e.g. ["Category","TPD Field Name","Extra"]
 
-    # Now pull the file‐mapping out of cols D+ on rows 1–2
-    raw_hdrs  = df.iloc[0, 3:]    # row 1: headers
-    raw_files = df.iloc[1, 3:]    # row 2: filenames
+# start summary with those three columns
+summary_df = first_df[index_cols].copy()
 
-    # keep only truly non‐empty filenames
-    mask      = raw_files.notna() & (raw_files.astype(str).str.strip() != "")
-    headers   = raw_hdrs[mask].astype(str).tolist()
-    file_names= raw_files[mask].astype(str).str.strip().tolist()
+# then add each file’s “Status” into its own column
+for fname in csv_files:
+    df = pd.read_csv(os.path.join(OUTPUT_DIR, fname), dtype=str)
+    summary_df[fname] = df["Status"]
 
-    # ensure “.csv” on each name
-    file_names = [
-        fn if fn.lower().endswith(".csv") else fn + ".csv"
-        for fn in file_names
-    ]
+# ---- 2) WRITE OUT EXCEL WITH FORMATTING ----
+os.makedirs(SUMMARY_DIR, exist_ok=True)
+with pd.ExcelWriter(SUMMARY_PATH, engine="xlsxwriter") as writer:
+    summary_df.to_excel(writer, index=False, sheet_name="Summary")
+    wb  = writer.book
+    ws  = writer.sheets["Summary"]
 
-    file_map = dict(zip(headers, file_names))
+    # formats
+    red_fmt    = wb.add_format({"bg_color": "#FFC7CE"})
+    yellow_fmt = wb.add_format({"bg_color": "#FFEB9C"})
+    green_fmt  = wb.add_format({"bg_color": "#C6EFCE"})
+    blue_hdr   = wb.add_format({"bg_color": "#ADD8E6", "bold": True})
 
-    return header_A, header_C, cats, tpd_fld, extra, file_map
+    # header row blue
+    ws.set_row(0, None, blue_hdr)
 
-# ---------------------------
-# Evaluate one CSV data file
-# ---------------------------
-def evaluate_file(full_path, tpd_fields):
-    df = pd.read_csv(full_path, low_memory=False)
-    total = df.shape[0]
-
-    results = []
-    for field in tpd_fields:
-        if field in df.columns:
-            # drop NaNs, then drop empty strings
-            non_blank = df[field].dropna()
-            non_blank = non_blank[non_blank.astype(str).str.strip() != ""]
-            cnt = non_blank.shape[0]
-
-            if cnt == total:
-                results.append("Included")
-            elif cnt > 0:
-                results.append("Partial")
-            else:
-                results.append("All Blank")
-        else:
-            results.append("Field Missing")
-    return results
-
-# ---------------------------
-# Write the per‐file Output CSV
-# ---------------------------
-def save_results(file_name,
-                 header_A, header_C,
-                 cats, tpd_fields, extra,
-                 results):
-    # build DataFrame with columns:
-    #   A = header_A
-    #   B = "TPD Field Name"
-    #   C = header_C
-    #   D = "Status"
-    out_df = pd.DataFrame({
-        header_A:          cats,
-        "TPD Field Name":  tpd_fields,
-        header_C:          extra,
-        "Status":          results
-    })
-    out_path = os.path.join(OUTPUT_DIRECTORY, file_name)
-    out_df.to_csv(out_path, index=False)
-
-# ---------------------------
-# Main
-# ---------------------------
-def main():
-    df_run = read_run_csv(RUN_CSV_PATH)
-    if df_run is None:
-        return
-
-    header_A, header_C, cats, tpd_fields, extra, file_map = parse_run_df(df_run)
-
-    if not file_map:
-        print("No files specified in row 2 of Run.csv.")
-        return
-
-    for hdr, fname in file_map.items():
-        full_path = os.path.join(FILES_DIRECTORY, fname)
-        if not os.path.exists(full_path):
-            print(f"Missing file for header '{hdr}': {fname}")
+    # apply conditional formatting on each “Status” column
+    for col_idx, col_name in enumerate(summary_df.columns):
+        if col_name in index_cols:
             continue
+        col_letter = xlsxwriter.utility.xl_col_to_name(col_idx)
+        cell_range = f"{col_letter}2:{col_letter}{len(summary_df)+1}"
 
-        results = evaluate_file(full_path, tpd_fields)
-        save_results(fname,
-                     header_A, header_C,
-                     cats, tpd_fields, extra,
-                     results)
-        print(f"Results written for file: {fname}")
+        # Missing → red
+        ws.conditional_format(cell_range, {
+            "type":     "text",
+            "criteria": "containing",
+            "value":    "Missing",
+            "format":   red_fmt
+        })
+        # Partial → yellow
+        ws.conditional_format(cell_range, {
+            "type":     "text",
+            "criteria": "containing",
+            "value":    "Partial",
+            "format":   yellow_fmt
+        })
+        # Included → green
+        ws.conditional_format(cell_range, {
+            "type":     "text",
+            "criteria": "containing",
+            "value":    "Included",
+            "format":   green_fmt
+        })
 
-if __name__ == "__main__":
-    main()
+# ---- 3) BUILD OVERALL STATUS SUMMARY FOR EMAIL ----
+summary_status = []
+for fname in csv_files:
+    stats = summary_df[fname].tolist()
+    if any("Missing" in s for s in stats):
+        overall = "Missing"
+    elif any("Partial" in s for s in stats):
+        overall = "Partial"
+    else:
+        overall = "Included"
+    summary_status.append((fname, overall))
+
+# build HTML table with blue header
+today_str = datetime.date.today().strftime("%m-%d-%Y")
+html_rows = "".join(
+    f"<tr><td>{fname}</td><td>{status}</td></tr>"
+    for fname, status in summary_status
+)
+html_table = (
+    '<table border="1" cellpadding="5" cellspacing="0" '
+    'style="border-collapse:collapse;">'
+    '<tr style="background-color:#ADD8E6;">'
+    '<th>File Name</th><th>Status</th></tr>'
+    f"{html_rows}</table>"
+)
+
+# ---- 4) CREATE AND DISPLAY OUTLOOK EMAIL ----
+outlook = win32.Dispatch('Outlook.Application')
+mail    = outlook.CreateItem(0)
+mail.To       = ";".join(TO_ADDRESSES)
+mail.CC       = ";".join(CC_ADDRESSES)
+mail.Subject  = f"Completed files for {today_str}"
+mail.HTMLBody = (
+    "<p>Hi Rishi, Team,</p>"
+    f"<p>Please see attached completed files for {today_str}.</p>"
+    f"{html_table}"
+    "<p>Thank-you,<br>Control Management Team</p>"
+)
+
+# attach the summary workbook
+mail.Attachments.Add(SUMMARY_PATH)
+
+# display for review (change to .Send() to auto-send)
+mail.Display()
