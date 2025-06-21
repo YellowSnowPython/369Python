@@ -1,3 +1,78 @@
-bleeh...
-git remote add origin https://github.com/YellowSnowPython/369Python.git
-git push -u origin main
+tpd_field_checker.py
+
+import os import pandas as pd from datetime import datetime
+
+---------------------------
+
+Configuration
+
+---------------------------
+
+RUN_CSV_PATH = "C:/Input/Run.csv" FILES_DIRECTORY = "C:/Files/Located/" OUTPUT_DIRECTORY = "C:/Files/Located/" DATE_SUFFIX = datetime.now().strftime("%m-%d")
+
+---------------------------
+
+Utility Functions
+
+---------------------------
+
+def read_csv_safely(path): try: with open(path, 'r') as file: return pd.read_csv(file) except Exception as e: print(f"Error reading {path}: {e}") return pd.DataFrame()
+
+---------------------------
+
+Data Loading
+
+---------------------------
+
+def load_run_csv(): df = read_csv_safely(RUN_CSV_PATH) if df.empty: return [], {} tpd_fields = df.iloc[1:, 1].dropna().astype(str).tolist() headers = df.iloc[0, 3:23].dropna().astype(str) file_map = {header: f"{header}.csv" for header in headers} return tpd_fields, file_map
+
+---------------------------
+
+Core Logic
+
+---------------------------
+
+def evaluate_file(file_path, tpd_fields): df = read_csv_safely(file_path) if df.empty or df.shape[1] < 1: return ["N/A"] * len(tpd_fields)
+
+total_entries = df.iloc[1:, 0].dropna().shape[0]
+result = []
+
+for field in tpd_fields:
+    if field in df.columns:
+        filled = df[field].dropna().shape[0]
+        if filled == total_entries:
+            result.append("Included")
+        elif filled > 0:
+            result.append("Inconsistent - partial data")
+        else:
+            result.append("Inconsistent - partial data")
+    else:
+        result.append("Field Missing")
+return result
+
+---------------------------
+
+Output Writer
+
+---------------------------
+
+def save_result_csv(header, tpd_fields, results): output_df = pd.DataFrame({ "TPD Field Name": tpd_fields, "Results*": results }) os.makedirs(OUTPUT_DIRECTORY, exist_ok=True) out_file = os.path.join(OUTPUT_DIRECTORY, f"{DATE_SUFFIX} - {header}") output_df.to_csv(out_file, index=False)
+
+---------------------------
+
+Main Entry Point
+
+---------------------------
+
+def main(): tpd_fields, file_map = load_run_csv() if not tpd_fields or not file_map: print("No data found in Run.csv.") return
+
+for header, file_name in file_map.items():
+    file_path = os.path.join(FILES_DIRECTORY, file_name)
+    if not os.path.exists(file_path):
+        results = ["N/A"] * len(tpd_fields)
+    else:
+        results = evaluate_file(file_path, tpd_fields)
+    save_result_csv(file_name, tpd_fields, results)
+
+if name == "main": main()
+
