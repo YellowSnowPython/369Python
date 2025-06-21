@@ -1,67 +1,113 @@
-# 222tpd_field_checker_step4.py
+# tpd_field_checker.py
 
 import os
 import pandas as pd
-from datetime import datetime
 
 # ---------------------------
 # Configuration
 # ---------------------------
 RUN_CSV_PATH    = r"C:\Input\Run.csv"
 FILES_DIRECTORY = r"C:\Files\Located"
-OUTPUT_DIRECTORY = r"C:\Files\Located\Output"
-DATE_SUFFIX     = datetime.now().strftime("%Y-%m-%d")
+OUTPUT_DIRECTORY = os.path.join(FILES_DIRECTORY, "Output")
+
+# Prepare output directory: create if missing, else clear existing files
+if not os.path.exists(OUTPUT_DIRECTORY):
+    os.makedirs(OUTPUT_DIRECTORY)
+else:
+    for fn in os.listdir(OUTPUT_DIRECTORY):
+        fp = os.path.join(OUTPUT_DIRECTORY, fn)
+        if os.path.isfile(fp):
+            try:
+                os.remove(fp)
+            except Exception as e:
+                print(f"Warning: could not remove {fp}: {e}")
 
 # ---------------------------
-# Step 1: Read Run.csv
+# Read Run.csv and extract mappings
 # ---------------------------
 def read_run_csv(path):
-    """
-    Reads Run.csv without assuming a header. Returns DataFrame or None.
-    """
     try:
         df = pd.read_csv(path, header=None, low_memory=False)
-        print(f"Loaded Run.csv: {df.shape[0]} rows × {df.shape[1]} cols")
         return df
     except Exception as e:
-        print(f"Error reading {path}: {e}")
+        print(f"Error reading Run.csv: {e}")
         return None
 
-# ---------------------------
-# Step 2: Parse Run.csv
-# ---------------------------
 def parse_run_df(df):
-    """
-    Extracts:
-      - tpd_fields: list of field names from column B (rows 2+)
-      - file_map: dict mapping header name (D1+) to actual filename (D2+);
-        if filename cell is blank, fallback to header name (with .csv extension if missing)
-      - field_mapping: DataFrame mapping tpd_fields to CSV column names (from rows 2+, cols D+)
-    """
-    # TPD fields from column B (index 1), rows 2+ (iloc[1:,1])
+    # TPD fields in column B (index 1), rows 2 onward
     tpd_fields = df.iloc[1:, 1].dropna().astype(str).tolist()
-    print(f"TPD fields ({len(tpd_fields)}): {tpd_fields}")
 
-    # Headers from row 1 (D1+) and filenames from row 2 (D2+)
-    headers = df.iloc[0, 3:].astype(str).tolist()
-    filenames = df.iloc[1, 3:].astype(str).tolist()
+    # Headers in row 1, columns D onward (index 3+)
+    raw_headers = df.iloc[0, 3:]
+    # Actual filenames in row 2, columns D onward
+    raw_fnames  = df.iloc[1, 3:]
 
-    # Build file_map with fallback: header if filename empty or 'nan'
-    file_map = {}
-    for hdr, fn in zip(headers, filenames):
-        fn_clean = fn.strip() if isinstance(fn, str) else ''
-        if not fn_clean or fn_clean.lower() == 'nan':
-            # fallback to header name
-            fn_clean = hdr if hdr.lower().endswith('.csv') else f"{hdr}.csv"
-        file_map[hdr] = fn_clean
-    print(f"File map ({len(file_map)}): {file_map}")
+    # Build a mask for truly non‐empty filenames
+    mask = raw_fnames.notna() & (raw_fnames.astype(str).str.strip() != "")
+    headers   = raw_headers[mask].astype(str).tolist()
+    file_names = raw_fnames[mask].astype(str).tolist()
 
-    # Build field mapping from rows 2+ and cols D+
-    mapping_df = df.iloc[1:1+len(tpd_fields), 3:3+len(headers)].copy()
-    mapping_df.columns = headers
-    mapping_df.index = tpd_fields
-    print("Field mapping sample:")
-    print(mapping_df.head())
+    # Map header → filename
+    file_map = dict(zip(headers, file_names))
+    return tpd_fields, file_map
 
-    return tpd_fields, file_map, mapping_df
+# ---------------------------
+# Evaluate a single CSV file
+# ---------------------------
+def evaluate_file(full_path, tpd_fields):
+    df = pd.read_csv(full_path, low_memory=False)
+    total_rows = df.shape[0]  # count of data rows
 
+    results = []
+    for field in tpd_fields:
+        if field in df.columns:
+            # Drop genuine NaNs, then drop any empty‐string cells
+            non_blank = df[field].dropna()
+            non_blank = non_blank[non_blank.astype(str).str.strip() != ""]
+            cnt = non_blank.shape[0]
+
+            if cnt == total_rows:
+                results.append("Included")
+            elif cnt > 0:
+                results.append("Partial")
+            else:
+                results.append("All Blank")
+        else:
+            results.append("Field Missing")
+    return results
+
+# ---------------------------
+# Save results for a file
+# ---------------------------
+def save_results(file_name, tpd_fields, results):
+    output_path = os.path.join(OUTPUT_DIRECTORY, file_name)
+    df_out = pd.DataFrame({
+        "TPD Field Name": tpd_fields,
+        "Status":         results,
+    })
+    df_out.to_csv(output_path, index=False)
+
+# ---------------------------
+# Main
+# ---------------------------
+def main():
+    df_run = read_run_csv(RUN_CSV_PATH)
+    if df_run is None:
+        return
+
+    tpd_fields, file_map = parse_run_df(df_run)
+    if not file_map:
+        print("No files specified in row 2 of Run.csv.")
+        return
+
+    for header, fname in file_map.items():
+        full_path = os.path.join(FILES_DIRECTORY, fname)
+        if not os.path.exists(full_path):
+            print(f"Missing file for header '{header}': {fname}")
+            continue
+        results = evaluate_file(full_path, tpd_fields)
+        save_results(fname, tpd_fields, results)
+        print(f"Results written for file: {fname}")
+
+if __name__ == "__main__":
+    main()
