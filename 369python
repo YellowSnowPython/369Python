@@ -1,100 +1,56 @@
 
-import pandas as pd
-import re
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-from urllib.parse import urlparse
+Here's exactly how your input_keywords.csv should look — including headers and up to 25 keyword rows.
 
-# Load keyword CSV
-def load_keywords(csv_path):
-    df = pd.read_csv(csv_path)
-    keywords = []
-    for _, row in df.iterrows():
-        keywords.append({
-            'term': row['keyword'].lower(),
-            'before': int(row['words_before']),
-            'after': int(row['words_after'])
-        })
-    return keywords
 
-# Extract text with surrounding context
-def extract_snippets(text, keyword, before, after):
-    words = text.split()
-    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
-    snippets = []
-    for match in pattern.finditer(text):
-        start = max(0, len(text[:match.start()].split()) - before)
-        end = len(text[:match.end()].split()) + after
-        snippet = ' '.join(words[start:end])
-        snippets.append(snippet)
-    return snippets
+---
 
-# Scrape and search content
-def scrape_and_find(page, url, keywords):
-    page.goto(url, timeout=15000)
-    page.wait_for_load_state('domcontentloaded')
-    html = page.content()
-    soup = BeautifulSoup(html, 'html.parser')
-    text = ' '.join(p.get_text(separator=' ') for p in soup.find_all('p'))
-    matches = []
-    for kw in keywords:
-        found = extract_snippets(text, kw['term'], kw['before'], kw['after'])
-        for snippet in found:
-            matches.append((url, snippet))
-    return matches
+📄 Sample: input_keywords.csv
 
-# Google Search
+keyword	words_before	words_after
 
-def google_search(playwright, query):
-    browser = playwright.chromium.launch(headless=False)
-    context = browser.new_context()
-    page = context.new_page()
-    page.goto("https://www.google.com")
+reg w	30	30
+regulation w	30	30
+trade date	25	25
+confirmation	20	20
+market terms	20	20
+violation	15	15
+affiliate	20	20
+section 23a	25	25
+documentation	20	20
 
-    page.locator("input[name='q']").fill(query)
-    page.keyboard.press("Enter")
-    page.wait_for_selector("h3")
 
-    links = page.locator("a:has(h3)").all()
-    urls = []
-    for link in links:
-        href = link.get_attribute("href")
-        if href and any(site in href for site in ['finra.org', 'sec.gov', 'federalreserve.gov', 'occ.gov']):
-            urls.append(href)
-        if len(urls) >= 5:  # limit to top 5 per keyword
-            break
+➡️ Notes:
 
-    context.close()
-    browser.close()
-    return urls
+You can use phrases or single words.
 
-# Main logic
-def main():
-    keywords = load_keywords("input_keywords.csv")
-    output = []
+words_before and words_after control how much context the script shows around the match.
 
-    with sync_playwright() as p:
-        for kw in keywords:
-            query = f'"{kw["term"]}" site:finra.org OR site:sec.gov OR site:federalreserve.gov OR site:occ.gov'
-            urls = google_search(p, query)
+The script supports up to 25 rows, but fewer is fine.
 
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context()
-            page = context.new_page()
 
-            for url in urls:
-                try:
-                    results = scrape_and_find(page, url, [kw])
-                    output.extend(results)
-                except Exception as e:
-                    print(f"Error scraping {url}: {e}")
 
-            context.close()
-            browser.close()
+---
 
-    # Export to CSV
-    df_out = pd.DataFrame(output, columns=["Website URL", "Matched Snippet"])
-    df_out.to_csv("results.csv", index=False)
+📝 Create It
 
-if __name__ == "__main__":
-    main()
+You can:
+
+Create it in Excel, then save as CSV (Comma delimited) (*.csv)
+
+Or create in Notepad like this:
+
+
+keyword,words_before,words_after
+reg w,30,30
+trade date,25,25
+confirmation,20,20
+market terms,20,20
+violation,15,15
+
+Save as input_keywords.csv in the same folder as the script.
+
+
+---
+
+Would you like me to generate and give you a downloadable sample input_keywords.csv to get started?
+
