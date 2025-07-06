@@ -1,56 +1,120 @@
-
-Here's exactly how your input_keywords.csv should look — including headers and up to 25 keyword rows.
-
-
----
-
-📄 Sample: input_keywords.csv
-
-keyword	words_before	words_after
-
-reg w	30	30
-regulation w	30	30
-trade date	25	25
-confirmation	20	20
-market terms	20	20
-violation	15	15
-affiliate	20	20
-section 23a	25	25
-documentation	20	20
-
-
-➡️ Notes:
-
-You can use phrases or single words.
-
-words_before and words_after control how much context the script shows around the match.
-
-The script supports up to 25 rows, but fewer is fine.
-
+Ah, yes — if you're seeing “unusual activity” CAPTCHAs from Google, that's a common issue when using automated tools like Playwright to scrape Google Search. Here's what's happening and how to fix or work around it:
 
 
 ---
 
-📝 Create It
+⚠️ Why It Happens
 
-You can:
+Google detects that:
 
-Create it in Excel, then save as CSV (Comma delimited) (*.csv)
+A browser is automating search queries
 
-Or create in Notepad like this:
+There’s no mouse movement or real typing
+
+The browser may be launching with default settings (fingerprint mismatch)
 
 
-keyword,words_before,words_after
-reg w,30,30
-trade date,25,25
-confirmation,20,20
-market terms,20,20
-violation,15,15
-
-Save as input_keywords.csv in the same folder as the script.
+This triggers Google to think it's a bot, not a human — especially from corporate or cloud networks.
 
 
 ---
 
-Would you like me to generate and give you a downloadable sample input_keywords.csv to get started?
+✅ 5 Ways to Fix or Avoid the CAPTCHA
+
+✅ 1. Use Realistic Human Behavior
+
+Update your script to:
+
+Type slowly (instead of instantly filling the box)
+
+Add delay before and after actions
+
+Move the mouse slightly before typing
+
+
+Here's how to simulate typing slowly:
+
+import time
+page.goto("https://www.google.com")
+search_box = page.locator("input[name='q']")
+search_box.click()
+for char in query:
+    search_box.type(char)
+    time.sleep(0.1)  # 100ms between keystrokes
+page.keyboard.press("Enter")
+
+
+---
+
+✅ 2. Use user_data_dir to Reuse a Browser Profile
+
+Let Playwright launch Edge as if it's your real profile:
+
+context = browser.new_context(user_data_dir="path/to/custom-profile")
+
+This saves cookies, login sessions, and avoids looking like a fresh bot each time.
+
+
+---
+
+✅ 3. Add User-Agent and Viewport Tweaks
+
+Make your browser look “normal”:
+
+context = browser.new_context(
+    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114 Safari/537.36",
+    viewport={'width': 1280, 'height': 800}
+)
+
+
+---
+
+✅ 4. Let You Solve CAPTCHA Once Manually
+
+Instead of navigating automatically to Google, do this:
+
+1. Run browser in headed mode
+
+
+2. Let it pause at google.com
+
+
+3. Manually solve CAPTCHA
+
+
+4. Continue scraping using that open browser tab
+
+
+
+(You can even reuse the browser context after solving it.)
+
+
+---
+
+✅ 5. Use Bing Instead (More Bot-Friendly)
+
+If scraping Google becomes too unstable, use Bing search instead:
+
+"https://www.bing.com/search?q=site:finra.org+%22reg+w%22+%22trade+date%22"
+
+Bing is much more tolerant of automated tools, and often returns the same links.
+
+
+---
+
+🛠 Want Help Applying These Fixes?
+
+I can:
+
+Modify your script to simulate human typing
+
+Add mouse movement / delays
+
+Switch it to use Bing instead of Google (no CAPTCHA hassle)
+
+Let it pause so you manually solve CAPTCHA once
+
+
+Let me know what you'd like!
+
 
