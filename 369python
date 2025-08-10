@@ -1,1 +1,128 @@
+Sheet: IRS-CCY (all formulas live here)
+
+1) Select the trade
+
+A1: fo_trd_id
+
+B1: (type the trade ID you want to validate, e.g., TRD12345)
+
+
+> We’ll use this robust pattern everywhere (no named ranges):
+
+=INDEX(Raw!$A:$ZZ,
+       MATCH($B$1, INDEX(Raw!$A:$ZZ,0, MATCH("fo_trd_id", Raw!$1:$1,0)), 0),
+       MATCH("<HEADER_NAME>", Raw!$1:$1, 0))
+
+Replace <HEADER_NAME> each time.
+
+
+
+2) Pull key fields from Raw (by header name only)
+
+Put these labels in column A and the formulas in column B.
+
+Cell	Label	Formula (paste exactly)
+
+A3	as_of_dt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("as_of_dt",Raw!$1:$1,0))
+A4	trd_dt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("trd_dt",Raw!$1:$1,0))
+A5	settl_dt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("settl_dt",Raw!$1:$1,0))
+A6	maturity_dt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("maturity_dt",Raw!$1:$1,0))
+A7	prod_desc	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("prod_desc",Raw!$1:$1,0))
+A8	cur_notl_amt (EUR)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("cur_notl_amt",Raw!$1:$1,0))
+A9	cur_notl_amt_usd (USD)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("cur_notl_amt_usd",Raw!$1:$1,0))
+A10	fx_rte_exec (EURUSD)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("fx_rte",Raw!$1:$1,0))
+A11	npv (EUR)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("npv",Raw!$1:$1,0))
+A12	npv_usd (USD)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("npv_usd",Raw!$1:$1,0))
+A13	pay_leg_npv (EUR)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("pay_leg_npv",Raw!$1:$1,0))
+A14	pay_leg_npv_usd (USD)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("pay_leg_npv_usd",Raw!$1:$1,0))
+A15	rcv_leg_npv (EUR)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("rcv_leg_npv",Raw!$1:$1,0))
+A16	rcv_leg_npv_usd (USD)	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("rcv_leg_npv_usd",Raw!$1:$1,0))
+A17	postd_npv_amt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("postd_npv_amt",Raw!$1:$1,0))
+A18	postd_npv_curr	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("postd_npv_curr",Raw!$1:$1,0))
+A19	pay_cur_notl_amt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("pay_cur_notl_amt",Raw!$1:$1,0))
+A20	pay_cur	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("pay_cur",Raw!$1:$1,0))
+A21	pay_leg_fx_rte	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("pay_leg_fx_rte",Raw!$1:$1,0))
+A22	rcv_cur_notl_amt	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("rcv_cur_notl_amt",Raw!$1:$1,0))
+A23	rcv_cur	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("rcv_cur",Raw!$1:$1,0))
+A24	rcv_leg_fx_rte	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("rcv_leg_fx_rte",Raw!$1:$1,0))
+A25	reg_notl_fx_rte	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("reg_notl_fx_rte",Raw!$1:$1,0))
+A26	exectn_tm	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("exectn_tm",Raw!$1:$1,0))
+A27	curve_info_mkt_data	=INDEX(Raw!$A:$ZZ, MATCH($B$1, INDEX(Raw!$A:$ZZ,0,MATCH("fo_trd_id",Raw!$1:$1,0)),0), MATCH("curve_info_mkt_data",Raw!$1:$1,0))
+
+
+3) Executed terms (type dummies now)
+
+A29: EUR_fixed_rate_exec → B29: 0.0245
+
+A30: USD_SOFR_spread_exec → B30: 0.00965
+
+
+4) Market placeholders on this same sheet
+
+We’ll keep it simple and paste Bloomberg later in columns D–J. For now, use dummies.
+
+D1: Pay_Date
+
+E1: USD_DiscountFactor
+
+F1: USD_CompSOFR_PeriodRate
+
+H1: EUR_DiscountFactor
+
+J1: FX_Forward_EURUSD
+
+
+Seed dates & dummies:
+
+D2: =B5 (first pay date = settl_dt), then D3: =EDATE(D2,3) and copy down quarterly until maturity (B6).
+
+E2:E100: 0.99 (dummy USD DFs)
+
+F2:F100: 0.05 (dummy compounded period rate)
+
+H2:H100: 0.995 (dummy EUR DFs)
+
+J2:J100: =B10 (use spot as forward dummy)
+
+
+5) Cashflows (compact, on IRS-CCY)
+
+EUR fixed leg (annual few rows)
+
+Headers row A35:K35:
+
+A35 Leg | B35 Per | C35 Start | D35 End | E35 Pay_Date | F35 YearFrac_30E360 | G35 Rate | H35 Cash_EUR | I35 DF_EUR | J35 PV_EUR | K35 PV_in_EUR
+
+Row 36:
+
+A36: EUR_FIXED
+B36: 1
+C36: =B5
+D36: =EDATE(C36,12)
+E36: =D36
+F36: =(360*(YEAR(D36)-YEAR(C36))+30*(MONTH(D36)-MONTH(C36))+(DAY(D36)-DAY(C36)))/360
+G36: =B29
+H36: =B8*G36*F36
+I36: =IFERROR(INDEX($H:$H, MATCH(E36, $D:$D, 0)), 0.995)
+J36: =H36*I36
+K36: =J36
+
+Row 37 (copy down until maturity):
+
+A37: =A36
+B37: =B36+1
+C37: =D36
+D37: =EDATE(C37,12)
+E37: =D37
+F37: copy F36
+G37: =B29
+H37: =IF(D37>$B$6,"", $B$8*G37*F37)
+I37: =IF(H37="","", IFERROR(INDEX($H:$H, MATCH(E37, $D:$D, 0)), 0.995))
+J37: =IF(H37="","", H37*I37)
+K37: =J37
+
+(Add EUR principal in H on final EUR row if your deal exchanges notionals.)
+
+USD floating
+
 
