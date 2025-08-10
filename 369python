@@ -1,3 +1,18 @@
+Perfect—no named ranges, no tables. Just Raw + IRS-CCY, and plain VLOOKUP/INDEX/MATCH formulas that pull by header name. Here’s exactly what to type and where.
+
+
+---
+
+Sheet: Raw
+
+Paste your export here. Headers on Row 1 (e.g., as_of_dt, fo_trd_id, …). One trade per row.
+
+The fo_trd_id can be in any column.
+
+
+
+---
+
 Sheet: IRS-CCY (all formulas live here)
 
 1) Select the trade
@@ -123,6 +138,64 @@ K37: =J37
 
 (Add EUR principal in H on final EUR row if your deal exchanges notionals.)
 
-USD floating
+USD floating leg (quarterly)
 
+Headers row A50:K50:
+
+A50 Leg | B50 Per | C50 Start | D50 End | E50 Pay_Date | F50 YearFrac_ACT360 | G50 CompSOFR_Period | H50 GrossRate | I50 Cash_USD | J50 DF_USD | K50 PV_USD | L50 PV_in_EUR
+
+Row 51:
+
+A51: USD_FLOAT
+B51: 1
+C51: =B5
+D51: =EDATE(C51,3)
+E51: =D51
+F51: =(E51-C51)/360
+G51: =IFERROR(INDEX($F:$F, MATCH(E51, $D:$D, 0)), 0.05)
+H51: =G51 + $B$30
+I51: =$B$9 * H51 * F51
+J51: =IFERROR(INDEX($E:$E, MATCH(E51, $D:$D, 0)), 0.99)
+K51: =I51 * J51
+L51: =K51 / IFERROR(INDEX($J:$J, MATCH(E51, $D:$D, 0)), $B$10)
+
+Row 52 (copy down until maturity):
+
+A52: =A51
+B52: =B51+1
+C52: =D51
+D52: =EDATE(C52,3)
+E52: =D52
+F52: =(E52-C52)/360
+G52: =IFERROR(INDEX($F:$F, MATCH(E52, $D:$D, 0)), 0.05)
+H52: =G52 + $B$30
+I52: =$B$9 * H52 * F52
+J52: =IFERROR(INDEX($E:$E, MATCH(E52, $D:$D, 0)), 0.99)
+K52: =I52 * J52
+L52: =IF(D52>$B$6,"", K52 / IFERROR(INDEX($J:$J, MATCH(E52, $D:$D, 0)), $B$10))
+
+(Add USD principal in I on the final USD row if the deal exchanges notionals.)
+
+6) Results (bottom of IRS-CCY)
+
+A80 PV_EUR_leg           B80: =SUMIF($A$36:$A$100,"EUR_FIXED",$J$36:$J$100)
+A81 PV_USD_leg_in_EUR    B81: =SUMIF($A$51:$A$200,"USD_FLOAT",$L$51:$L$200)
+A82 Model_NPV_EUR        B82: =B81 - B80
+A84 Posted_NPV_EUR       B84: =B11
+A85 Variance_EUR         B85: =B82 - B84
+A87 Executed_EUR_Fixed   B87: =B29
+A88 Executed_USD_Spread  B88: =B30
+
+Market-terms check (Goal Seek later)
+
+Par EUR fixed: Data → What-If → Goal Seek →
+Set cell B82 to 0 by changing B29.
+
+Par USD spread: Same, but change B30.
+
+
+
+---
+
+That’s it—only Raw and IRS-CCY, no named ranges, header-name lookups, dummy market inputs for now. When you paste Bloomberg DFs/forwards into D:E:F/H/J, the model will reprice automatically; run Goal Seek for your market-terms verdict.
 
