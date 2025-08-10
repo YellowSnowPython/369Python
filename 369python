@@ -2,31 +2,44 @@
   sett, INDEX($C:$C, MATCH("settl_dt",$B:$B,0)),
   matu, INDEX($C:$C, MATCH("maturity_dt",$B:$B,0)),
   notl, INDEX($C:$C, MATCH("cur_notl_amt",$B:$B,0)),
-  r,    $C$401,
+  r,    $C$39,
   n,    DATEDIF(sett,matu,"M")/12,
   k,    SEQUENCE(ROUNDUP(n,0),1,1,1),
   payS, EDATE(sett,(k-1)*12),
   payE, EDATE(sett,k*12),
   yf,   (360*(YEAR(payE)-YEAR(payS))+30*(MONTH(payE)-MONTH(payS))+(DAY(payE)-DAY(payS)))/360,
   payD, payE,
-  df,   IFERROR(XLOOKUP(payD,$G$200:$G$500,$H$200:$H$500), $C$405),
+  df,   IF( COUNTA($G$200:$H$200)=0,
+            $C$43,
+            IFERROR(XLOOKUP(payD,$G$200:$G$500,$H$200:$H$500,$C$43),$C$43)
+       ),
   SUMPRODUCT(notl*r*yf*df)
 )
+
 
 =LET(
   sett, INDEX($C:$C, MATCH("settl_dt",$B:$B,0)),
   matu, INDEX($C:$C, MATCH("maturity_dt",$B:$B,0)),
   notl, INDEX($C:$C, MATCH("cur_notl_amt_usd",$B:$B,0)),
-  spr,  $C$402,
-  fx0,  INDEX($C:$C, MATCH("fx_rte",$B:$B,0)),
+  spr,  $C$40,
+  fx0,  $C$44,
   n,    DATEDIF(sett,matu,"M")/3,
   k,    SEQUENCE(ROUNDUP(n,0),1,1,1),
   pS,   EDATE(sett,(k-1)*3),
   pE,   EDATE(sett,k*3),
   yf,   (pE-pS)/360,
   pD,   pE,
-  comp, IFERROR(XLOOKUP(pD,$J$200:$J$500,$L$200:$L$500), $C$404),
-  dfu,  IFERROR(XLOOKUP(pD,$J$200:$J$500,$K$200:$K$500), $C$403),
-  fwd,  IFERROR(XLOOKUP(pD,$N$200:$N$500,$O$200:$O$500), fx0),
+  comp, IF( COUNTA($J$200:$L$200)=0,
+            $C$42,
+            IFERROR(XLOOKUP(pD,$J$200:$J$500,$L$200:$L$500,$C$42),$C$42)
+       ),
+  dfu,  IF( COUNTA($J$200:$L$200)=0,
+            $C$41,
+            IFERROR(XLOOKUP(pD,$J$200:$J$500,$K$200:$K$500,$C$41),$C$41)
+       ),
+  fwd,  IF( COUNTA($N$200:$O$200)=0,
+            fx0,
+            IFERROR(XLOOKUP(pD,$N$200:$N$500,$O$200:$O$500,fx0),fx0)
+       ),
   SUMPRODUCT(notl*(comp+spr)*yf*dfu / fwd)
 )
