@@ -1,0 +1,274 @@
+import os
+import sys
+import time
+import datetime
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+from PIL import Image
+import mss
+
+# ---------------- Windows click-through helpers ----------------
+IS_WINDOWS = sys.platform.startswith("win")
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    GWL_EXSTYLE = -20
+    WS_EX_LAYERED = 0x00080000
+    WS_EX_TRANSPARENT = 0x00000020
+
+    def set_dpi_aware():
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    def get_exstyle(hwnd):
+        return user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_EXSTYLE)
+
+    def set_exstyle(hwnd, exstyle):
+        user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_EXSTYLE, exstyle)
+
+    def set_click_through(hwnd, enable: bool):
+        try:
+            style = get_exstyle(hwnd)
+            if enable:
+                style |= (WS_EX_LAYERED | WS_EX_TRANSPARENT)
+            else:
+                style = (style | WS_EX_LAYERED) & ~WS_EX_TRANSPARENT
+            set_exstyle(hwnd, style)
+        except Exception:
+            pass
+else:
+    def set_dpi_aware(): pass
+    def set_click_through(hwnd, enable: bool): pass
+
+SAVE_DIR = r"C:\Files"  # change if you like
+
+
+class App:
+    def __init__(self, root: tk.Tk):
+        set_dpi_aware()
+        os.makedirs(SAVE_DIR, exist_ok=True)
+
+        # --- Control window (buttons live here) ---
+        self.ctrl = root
+        self.ctrl.title("Capture Controls")
+        self.ctrl.attributes("-topmost", True)
+        self.ctrl.geometry("+40+40")
+
+        # --- Overlay window (click-through) ---
+        self.overlay = tk.Toplevel(self.ctrl)
+        self.overlay.title("Overlay")
+        self.overlay.attributes("-topmost", True)
+        self.alpha = 0.35
+        self._set_overlay_alpha(self.alpha)
+        self.overlay.geometry("800x450+200+200")
+
+        # Canvas to draw an outline on the overlay
+        self.canvas = tk.Canvas(self.overlay, highlightthickness=0, bg=self.overlay["bg"])
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._draw_overlay)
+
+        # Default name and state
+        self.base_name = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
+        self.click_through = True  # ON by default per your request
+
+        # Make overlay click-through initially
+        self._apply_click_through(self.click_through)
+
+        # Build control UI
+        self._build_controls()
+
+        # Keybinds (work from control window)
+        self.ctrl.bind("<space>", self._ask_name_popup)
+        for i, sfx in enumerate(["A", "B", "C", "D", "E"], start=1):
+            self.ctrl.bind(f"<Control-Key-{i}>", lambda e, s=sfx: self.save_with_suffix(s, prompt=False))
+
+        # Adjust transparency on overlay with mouse wheel
+        self.overlay.bind("<MouseWheel>", self._on_wheel)
+        self.overlay.bind("<Button-4>", lambda e: self._adjust_alpha(+0.05))
+        self.overlay.bind("<Button-5>", lambda e: self._adjust_alpha(-0.05))
+
+        self._update_titles()
+        self._update_status()
+
+    # ---------- UI ----------
+    def _build_controls(self):
+        wrap = tk.Frame(self.ctrl, padx=8, pady=8)
+        wrap.pack(fill="both", expand=True)
+
+        # Row: A–E (prompt for paste), no need to touch overlay
+        row1 = tk.Frame(wrap)
+        row1.pack(fill="x", pady=(0, 8))
+        for lab in ["A", "B", "C", "D", "E"]:
+            tk.Button(row1, text=lab, width=4,
+                      command=lambda s=lab: self.save_with_suffix(s, prompt=True)).pack(side="left", padx=4)
+
+        # Row: name + quick capture
+        row2 = tk.Frame(wrap)
+        row2.pack(fill="x", pady=(0, 8))
+        tk.Button(row2, text="Set Name (Space)", command=self._ask_name_popup).pack(side="left", padx=4)
+        tk.Button(row2, text="Capture Now (A, no prompt)",
+                  command=lambda: self.save_with_suffix("A", prompt=False)).pack(side="left", padx=4)
+
+        # Row: click-through toggle + resize helper
+        row3 = tk.Frame(wrap)
+        row3.pack(fill="x", pady=(0, 8))
+        self.ct_var = tk.StringVar(value="Click-through: ON")
+        tk.Button(row3, textvariable=self.ct_var, width=18, command=self.toggle_click_through).pack(side="left", padx=4)
+        tk.Label(row3, text="(Turn OFF to move/resize overlay, then ON again)").pack(side="left")
+
+        # Status
+        self.status_var = tk.StringVar()
+        tk.Label(self.ctrl, textvariable=self.status_var, anchor="w", padx=8, pady=6).pack(fill="x")
+
+    # ---------- Overlay visuals ----------
+    def _draw_overlay(self, _=None):
+        self.canvas.delete("all")
+        w = self.overlay.winfo_width()
+        h = self.overlay.winfo_height()
+        m = 3
+        self.canvas.create_rectangle(m, m, w - m, h - m, outline="#00ffff", width=2)
+        self.canvas.create_text(
+            10, 10, anchor="nw",
+            text=(
+                "This overlay is click-through.\n"
+                "Turn click-through OFF in Controls to move/resize.\n"
+                "Mouse wheel on overlay: change opacity."
+            ),
+            fill="#00ffff"
+        )
+
+    def _on_wheel(self, e):
+        self._adjust_alpha(+0.05 if e.delta > 0 else -0.05)
+
+    def _adjust_alpha(self, delta):
+        self.alpha = max(0.05, min(0.95, self.alpha + delta))
+        self._set_overlay_alpha(self.alpha)
+        self._update_status()
+
+    def _set_overlay_alpha(self, a):
+        try:
+            self.overlay.attributes("-alpha", a)
+        except tk.TclError:
+            pass
+
+    # ---------- Click-through ----------
+    def _apply_click_through(self, enable: bool):
+        if IS_WINDOWS:
+            hwnd = int(self.overlay.winfo_id())
+            set_click_through(hwnd, enable)
+
+    def toggle_click_through(self):
+        self.click_through = not self.click_through
+        self._apply_click_through(self.click_through)
+        self.ct_var.set("Click-through: ON" if self.click_through else "Click-through: OFF")
+        self._update_status()
+
+    # ---------- Naming ----------
+    def _get_clipboard_text(self) -> str:
+        try:
+            return self.ctrl.clipboard_get()
+        except Exception:
+            return ""
+
+    def _prompt_set_base(self, title="Base File Name") -> bool:
+        default = self._get_clipboard_text().strip() or self.base_name
+        name = simpledialog.askstring(title, "Paste or type the base name:", initialvalue=default, parent=self.ctrl)
+        if not name:
+            return False
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
+        if not safe:
+            messagebox.showwarning("Invalid name", "Name cannot be empty after removing invalid characters.")
+            return False
+        self.base_name = safe
+        self._update_titles()
+        return True
+
+    def _ask_name_popup(self, _=None):
+        self._prompt_set_base("Base File Name")
+
+    def _update_titles(self):
+        self.ctrl.title(f"Capture Controls — Base: {self.base_name}")
+        self.overlay.title(f"Overlay — opacity {int(self.alpha*100)}%")
+
+    def _update_status(self, saved: str = ""):
+        txt = f"Saving to {SAVE_DIR} | Overlay opacity: {int(self.alpha*100)}% | Click-through: {'ON' if self.click_through else 'OFF'}"
+        if saved:
+            txt += f" | Saved: {saved}"
+        self.status_var.set(txt)
+
+    # ---------- Capture ----------
+    def save_with_suffix(self, suffix: str, prompt: bool = False):
+        if prompt and not self._prompt_set_base(title=f"Save as … -{suffix}"):
+            return
+
+        # Get overlay geometry BEFORE hiding
+        x1 = self.overlay.winfo_rootx()
+        y1 = self.overlay.winfo_rooty()
+        w  = self.overlay.winfo_width()
+        h  = self.overlay.winfo_height()
+
+        # Build unique path
+        fname = f"{self.base_name}-{suffix}.png"
+        out_path = os.path.join(SAVE_DIR, fname)
+        base_no_ext, ext = os.path.splitext(out_path)
+        n = 1
+        while os.path.exists(out_path):
+            out_path = f"{base_no_ext} ({n}){ext}"
+            n += 1
+
+        # Hide both windows for a clean capture
+        self.overlay.withdraw()
+        self.ctrl.withdraw()
+        self.ctrl.update_idletasks()
+        time.sleep(0.15)
+
+        ok = False
+        try:
+            region = {"left": int(x1), "top": int(y1), "width": int(w), "height": int(h)}
+            with mss.mss() as sct:
+                raw = sct.grab(region)
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                img.save(out_path)
+                ok = True
+        except Exception as e:
+            messagebox.showerror("Capture failed", f"Could not save screenshot:\n{e}")
+        finally:
+            # Restore windows
+            self.overlay.deiconify()
+            self.ctrl.deiconify()
+            self.overlay.lift()
+            self.ctrl.lift()
+            self.overlay.attributes("-topmost", True)
+            self.ctrl.attributes("-topmost", True)
+
+        if ok:
+            self._flash_outline()
+            self._update_status(saved=out_path)
+
+    def _flash_outline(self):
+        try:
+            for _ in range(2):
+                for item in self.canvas.find_all():
+                    self.canvas.itemconfig(item, outline="#ffffff")
+                self.overlay.update()
+                time.sleep(0.05)
+                for item in self.canvas.find_all():
+                    self.canvas.itemconfig(item, outline="#00ffff")
+                self.overlay.update()
+                time.sleep(0.05)
+        except Exception:
+            pass
+
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
