@@ -1,9 +1,14 @@
-import os, time, sys, datetime, tkinter as tk
+import os
+import sys
+import time
+import datetime
+import tkinter as tk
 from tkinter import simpledialog, messagebox
+
 from PIL import Image
 import mss
 
-# --- Make DPI aware on Windows so coords match pixels ---
+# --- Make the process DPI aware so window coords match screen pixels (Windows) ---
 if sys.platform.startswith("win"):
     try:
         import ctypes
@@ -11,62 +16,72 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-SAVE_DIR = r"C:\Files"
+SAVE_DIR = r"C:\Files"  # Change if desired
+
 
 class OverlayApp:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Screen Overlay")
         self.root.attributes("-topmost", True)
 
-        # Window transparency (whole window). Widgets can't be individually translucent.
+        # Whole-window transparency (widgets themselves can't be translucent)
         self.alpha = 0.35
-        self.set_alpha(self.alpha)
+        self._set_alpha(self.alpha)
 
-        # Default size/position
+        # Default window size/pos
         self.root.geometry("800x450+100+100")
 
-        # Ensure save dir
+        # Ensure output folder exists
         os.makedirs(SAVE_DIR, exist_ok=True)
 
-        # Default base name
+        # Default base name (used when not prompting)
         self.base_name = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
 
-        # Build UI
-        self.build_ui()
+        # UI
+        self._build_ui()
 
         # Key bindings
-        self.root.bind("<space>", self.ask_name_popup)      # Space → set base name
-        self.root.bind("<Control-1>", lambda e: self.save_with_suffix("A"))
-        self.root.bind("<Control-2>", lambda e: self.save_with_suffix("B"))
-        self.root.bind("<Control-3>", lambda e: self.save_with_suffix("C"))
-        self.root.bind("<Control-4>", lambda e: self.save_with_suffix("D"))
-        self.root.bind("<Control-5>", lambda e: self.save_with_suffix("E"))
+        self.root.bind("<space>", self._ask_name_popup)          # Space → set base name (no save)
+        # Hotkeys without prompt (use current base_name)
+        self.root.bind("<Control-1>", lambda e: self.save_with_suffix("A", prompt=False))
+        self.root.bind("<Control-2>", lambda e: self.save_with_suffix("B", prompt=False))
+        self.root.bind("<Control-3>", lambda e: self.save_with_suffix("C", prompt=False))
+        self.root.bind("<Control-4>", lambda e: self.save_with_suffix("D", prompt=False))
+        self.root.bind("<Control-5>", lambda e: self.save_with_suffix("E", prompt=False))
 
-        # Mouse wheel to adjust overall transparency
-        self.root.bind("<MouseWheel>", self.on_wheel)       # Windows
-        self.root.bind("<Button-4>", lambda e: self.adjust_alpha(+0.05))  # Linux up
-        self.root.bind("<Button-5>", lambda e: self.adjust_alpha(-0.05))  # Linux down
+        # Mouse wheel to adjust opacity
+        self.root.bind("<MouseWheel>", self._on_wheel)           # Windows
+        self.root.bind("<Button-4>", lambda e: self._adjust_alpha(+0.05))  # Linux up
+        self.root.bind("<Button-5>", lambda e: self._adjust_alpha(-0.05))  # Linux down
 
-        self.update_title()
+        self._update_title()
 
-    def build_ui(self):
+    # ---------- UI ----------
+    def _build_ui(self):
         # Toolbar
         toolbar = tk.Frame(self.root, bg="#222", padx=6, pady=6)
         toolbar.pack(side="top", anchor="nw", fill="x")
 
         def mkbtn(label):
-            return tk.Button(toolbar, text=label, width=4, command=lambda s=label: self.save_with_suffix(s))
+            # Clicking A–E prompts for a name (great for paste), then saves with that suffix
+            return tk.Button(toolbar, text=label, width=4,
+                             command=lambda s=label: self.save_with_suffix(s, prompt=True))
 
         for lab in ["A", "B", "C", "D", "E"]:
             mkbtn(lab).pack(side="left", padx=4)
 
         tk.Label(toolbar, text="  |  ", bg="#222", fg="#ccc").pack(side="left")
-        tk.Button(toolbar, text="Set Name (Space)", command=self.ask_name_popup).pack(side="left", padx=4)
-        tk.Button(toolbar, text="Capture Now (A)", command=lambda: self.save_with_suffix("A")).pack(side="left", padx=4)
+
+        tk.Button(toolbar, text="Set Name (Space)",
+                  command=self._ask_name_popup).pack(side="left", padx=4)
+
+        tk.Button(toolbar, text="Capture Now (A, no prompt)",
+                  command=lambda: self.save_with_suffix("A", prompt=False)).pack(side="left", padx=4)
+
         tk.Button(toolbar, text="Quit", command=self.root.destroy).pack(side="left", padx=4)
 
-        # Status
+        # Status bar
         status = tk.Frame(self.root, bg="#111")
         status.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value=f"Saving to {SAVE_DIR}")
@@ -74,12 +89,12 @@ class OverlayApp:
             side="left", padx=8, pady=4
         )
 
-        # Canvas: use a safe bg (empty string can error on some builds)
+        # Canvas (use a safe background; empty string may error on some builds)
         self.canvas = tk.Canvas(self.root, highlightthickness=0, bg=self.root["bg"])
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self.draw_outline)
+        self.canvas.bind("<Configure>", self._draw_outline)
 
-    def draw_outline(self, _=None):
+    def _draw_outline(self, _=None):
         self.canvas.delete("all")
         w = self.root.winfo_width()
         h = self.root.winfo_height()
@@ -87,47 +102,68 @@ class OverlayApp:
         self.canvas.create_rectangle(m, m, w - m, h - m, outline="#00ffff", width=2)
         self.canvas.create_text(
             10, 10, anchor="nw",
-            text="Resize window to set capture area.\nMouse wheel: opacity.\nSpace: set base name.",
+            text="Resize to set capture area.\nMouse wheel: opacity.\nSpace: set base name.\nButtons A–E: prompt + save.",
             fill="#00ffff"
         )
 
-    def on_wheel(self, e):
-        self.adjust_alpha(+0.05 if e.delta > 0 else -0.05)
+    # ---------- Transparency ----------
+    def _on_wheel(self, e):
+        self._adjust_alpha(+0.05 if e.delta > 0 else -0.05)
 
-    def adjust_alpha(self, delta):
+    def _adjust_alpha(self, delta):
         self.alpha = max(0.05, min(0.95, self.alpha + delta))
-        self.set_alpha(self.alpha)
+        self._set_alpha(self.alpha)
         self.status_var.set(f"Opacity: {int(self.alpha*100)}%   |   Saving to {SAVE_DIR}")
 
-    def set_alpha(self, a):
+    def _set_alpha(self, a):
         try:
             self.root.attributes("-alpha", a)
         except tk.TclError:
             pass
 
-    def ask_name_popup(self, _=None):
-        name = simpledialog.askstring(
-            "Base File Name",
-            "Enter a base name:",
-            initialvalue=self.base_name,
-            parent=self.root
-        )
-        if name:
-            safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
-            self.base_name = safe or "capture"
-            self.update_title()
+    # ---------- Naming helpers ----------
+    def _get_clipboard_text(self) -> str:
+        try:
+            return self.root.clipboard_get()
+        except Exception:
+            return ""
 
-    def update_title(self):
+    def _prompt_and_set_base(self, title="Base File Name") -> bool:
+        # Prefill with clipboard (ideal for paste), else current base name
+        default = self._get_clipboard_text().strip() or self.base_name
+        name = simpledialog.askstring(
+            title, "Paste or type the base name:", initialvalue=default, parent=self.root
+        )
+        if not name:
+            return False  # cancelled
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
+        if not safe:
+            messagebox.showwarning("Invalid name", "Name cannot be empty after removing invalid characters.")
+            return False
+        self.base_name = safe
+        self._update_title()
+        return True
+
+    def _ask_name_popup(self, _=None):
+        self._prompt_and_set_base("Base File Name")
+
+    def _update_title(self):
         self.root.title(f"Screen Overlay — Base name: {self.base_name}")
 
-    def save_with_suffix(self, suffix: str):
+    # ---------- Capture ----------
+    def save_with_suffix(self, suffix: str, prompt: bool = False):
+        # Optionally prompt for a fresh base (paste-friendly)
+        if prompt:
+            if not self._prompt_and_set_base(title=f"Save as … -{suffix}"):
+                return  # user cancelled
+
         # Compute geometry BEFORE hiding
         x1 = self.root.winfo_rootx()
         y1 = self.root.winfo_rooty()
         w = self.root.winfo_width()
         h = self.root.winfo_height()
 
-        # Build path with de-dupe
+        # Build unique output path
         fname = f"{self.base_name}-{suffix}.png"
         out_path = os.path.join(SAVE_DIR, fname)
         base_no_ext, ext = os.path.splitext(out_path)
@@ -139,14 +175,15 @@ class OverlayApp:
         # Hide overlay so it never appears in the capture
         self.root.withdraw()
         self.root.update_idletasks()
-        time.sleep(0.15)  # tiny delay so the compositor has time to remove the window
+        time.sleep(0.15)  # small delay so compositor removes the window
 
         ok = False
         try:
+            # Dual-monitor friendly absolute region (left/top may be negative)
+            region = {"left": int(x1), "top": int(y1), "width": int(w), "height": int(h)}
             with mss.mss() as sct:
-                region = {"left": int(x1), "top": int(y1), "width": int(w), "height": int(h)}
                 raw = sct.grab(region)
-                # Convert to PIL Image (BGRA → RGB)
+                # Convert BGRA → RGB for Pillow
                 img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 img.save(out_path)
                 ok = True
@@ -160,9 +197,9 @@ class OverlayApp:
 
         if ok:
             self.status_var.set(f"Saved: {out_path}")
-            self.flash_outline()
+            self._flash_outline()
 
-    def flash_outline(self):
+    def _flash_outline(self):
         try:
             for _ in range(2):
                 for item in self.canvas.find_all():
@@ -181,6 +218,7 @@ def main():
     root = tk.Tk()
     app = OverlayApp(root)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
