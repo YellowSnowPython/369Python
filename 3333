@@ -1,0 +1,300 @@
+import os
+import sys
+import time
+import datetime
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+
+from PIL import Image
+import mss
+
+# --- Make process DPI aware on Windows so coords match physical pixels ---
+if sys.platform.startswith("win"):
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+SAVE_DIR = r"C:\Files"  # change if desired
+
+
+class OverlayApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Screen Overlay")
+        self.root.attributes("-topmost", True)
+
+        # Whole-window transparency
+        self.alpha = 0.35
+        self._set_alpha(self.alpha)
+
+        # Default geometry
+        self.root.geometry("800x450+200+200")
+        os.makedirs(SAVE_DIR, exist_ok=True)
+
+        # Base name (used if no prompt)
+        self.base_name = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
+
+        # Collapse/expand state
+        self.collapsed = False
+        self.saved_geometry = None  # will hold original "WxH+X+Y" when collapsed
+
+        # Build UI
+        self._build_ui()
+
+        # Key bindings
+        self.root.bind("<space>", self._ask_name_popup)  # set base name
+        # quick hotkeys without prompt
+        self.root.bind("<Control-1>", lambda e: self.save_with_suffix("A", prompt=False))
+        self.root.bind("<Control-2>", lambda e: self.save_with_suffix("B", prompt=False))
+        self.root.bind("<Control-3>", lambda e: self.save_with_suffix("C", prompt=False))
+        self.root.bind("<Control-4>", lambda e: self.save_with_suffix("D", prompt=False))
+        self.root.bind("<Control-5>", lambda e: self.save_with_suffix("E", prompt=False))
+
+        # Mouse wheel to adjust transparency
+        self.root.bind("<MouseWheel>", self._on_wheel)            # Windows
+        self.root.bind("<Button-4>", lambda e: self._adjust_alpha(+0.05))  # Linux up
+        self.root.bind("<Button-5>", lambda e: self._adjust_alpha(-0.05))  # Linux down
+
+        self._update_title()
+
+    # ---------- UI ----------
+    def _build_ui(self):
+        # Top toolbar
+        self.toolbar = tk.Frame(self.root, bg="#222", padx=6, pady=6)
+        self.toolbar.pack(side="top", anchor="nw", fill="x")
+
+        # Collapse/Expand toggle (to the LEFT of A–E)
+        self.collapse_var = tk.StringVar(value="Collapse")
+        self.collapse_btn = tk.Button(self.toolbar, textvariable=self.collapse_var, width=10,
+                                      command=self.toggle_collapse)
+        self.collapse_btn.pack(side="left", padx=(0, 8))
+
+        # A–E buttons (prompt for paste)
+        def mkbtn(label):
+            return tk.Button(self.toolbar, text=label, width=4,
+                             command=lambda s=label: self.save_with_suffix(s, prompt=True))
+        for lab in ["A", "B", "C", "D", "E"]:
+            mkbtn(lab).pack(side="left", padx=4)
+
+        tk.Label(self.toolbar, text="  |  ", bg="#222", fg="#ccc").pack(side="left")
+
+        tk.Button(self.toolbar, text="Set Name (Space)", command=self._ask_name_popup).pack(side="left", padx=4)
+        tk.Button(self.toolbar, text="Capture Now (A, no prompt)",
+                  command=lambda: self.save_with_suffix("A", prompt=False)).pack(side="left", padx=4)
+        tk.Button(self.toolbar, text="Quit", command=self.root.destroy).pack(side="left", padx=4)
+
+        # Status bar
+        status = tk.Frame(self.root, bg="#111")
+        status.pack(side="bottom", fill="x")
+        self.status_var = tk.StringVar(value=f"Saving to {SAVE_DIR}")
+        tk.Label(status, textvariable=self.status_var, bg="#111", fg="#ddd", anchor="w").pack(
+            side="left", padx=8, pady=4
+        )
+
+        # Canvas for the selection box
+        self.canvas = tk.Canvas(self.root, highlightthickness=0, bg=self.root["bg"])
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._draw_outline)
+
+    def _draw_outline(self, _=None):
+        self.canvas.delete("all")
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        # subtract toolbar & status heights to draw the inner rectangle nicely
+        toolbar_h = self.toolbar.winfo_height() or 0
+        status_h = self.root.winfo_height() - self.canvas.winfo_height() - toolbar_h
+        m = 3
+        top = max(toolbar_h + m, 0)
+        bottom = h - status_h - m
+        left = m
+        right = w - m
+        # Guard against tiny sizes
+        if right - left > 6 and bottom - top > 6:
+            self.canvas.create_rectangle(left, top, right, bottom, outline="#00ffff", width=2)
+            self.canvas.create_text(
+                10, toolbar_h + 10, anchor="nw",
+                text="Resize/move window to set capture area.\nMouse wheel: opacity.\nButtons A–E: prompt + save.",
+                fill="#00ffff"
+            )
+
+    # ---------- Transparency ----------
+    def _on_wheel(self, e):
+        self._adjust_alpha(+0.05 if e.delta > 0 else -0.05)
+
+    def _adjust_alpha(self, delta):
+        self.alpha = max(0.05, min(0.95, self.alpha + delta))
+        self._set_alpha(self.alpha)
+        self.status_var.set(f"Opacity: {int(self.alpha*100)}%   |   Saving to {SAVE_DIR}")
+
+    def _set_alpha(self, a):
+        try:
+            self.root.attributes("-alpha", a)
+        except tk.TclError:
+            pass
+
+    # ---------- Collapse / Expand ----------
+    def toggle_collapse(self):
+        if not self.collapsed:
+            # Save current geometry and collapse to a slim toolbar strip
+            self.saved_geometry = self.root.geometry()
+            # Hide the canvas so it doesn't cover the page
+            self.canvas.forget()
+            # Shrink window to toolbar height; keep same top-left so your mouse stays nearby
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            self.root.update_idletasks()
+            # width: keep current width; height: just toolbar + status
+            width = max(self.root.winfo_width(), 320)
+            toolbar_h = self.toolbar.winfo_reqheight()
+            status_h =  self.root.winfo_height() - self.canvas.winfo_height() - (self.toolbar.winfo_height() or 0)
+            height = max(toolbar_h + (status_h if status_h > 0 else 30), 40)
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+            self.collapsed = True
+            self.collapse_var.set("Expand")
+            self.status_var.set("Overlay collapsed — click again to expand and capture.")
+        else:
+            # Restore geometry and canvas
+            if self.saved_geometry:
+                self.root.geometry(self.saved_geometry)
+            self.canvas.pack(fill="both", expand=True)
+            self.collapsed = False
+            self.collapse_var.set("Collapse")
+            self.status_var.set(f"Overlay expanded — ready. Saving to {SAVE_DIR}")
+
+        # keep on top
+        self.root.attributes("-topmost", True)
+        self.root.lift()
+
+    # ---------- Naming ----------
+    def _get_clipboard_text(self) -> str:
+        try:
+            return self.root.clipboard_get()
+        except Exception:
+            return ""
+
+    def _prompt_and_set_base(self, title="Base File Name") -> bool:
+        default = self._get_clipboard_text().strip() or self.base_name
+        name = simpledialog.askstring(title, "Paste or type the base name:", initialvalue=default, parent=self.root)
+        if not name:
+            return False
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
+        if not safe:
+            messagebox.showwarning("Invalid name", "Name cannot be empty after removing invalid characters.")
+            return False
+        self.base_name = safe
+        self._update_title()
+        return True
+
+    def _ask_name_popup(self, _=None):
+        self._prompt_and_set_base("Base File Name")
+
+    def _update_title(self):
+        self.root.title(f"Screen Overlay — Base name: {self.base_name}")
+
+    # ---------- Capture ----------
+    def save_with_suffix(self, suffix: str, prompt: bool = False):
+        if prompt:
+            if not self._prompt_and_set_base(title=f"Save as … -{suffix}"):
+                return
+
+        # If collapsed, temporarily expand to saved geometry to capture the same area.
+        was_collapsed = self.collapsed
+        if was_collapsed and self.saved_geometry:
+            self.canvas.pack(fill="both", expand=True)
+            self.root.geometry(self.saved_geometry)
+            self.root.update_idletasks()
+
+        # Compute capture box BEFORE hiding window
+        x1 = self.root.winfo_rootx()
+        y1 = self.root.winfo_rooty()
+        w  = self.root.winfo_width()
+        h  = self.root.winfo_height()
+
+        # Exclude toolbar/status: capture only the inner selection area (between toolbar and bottom status)
+        toolbar_h = self.toolbar.winfo_height() or 0
+        status_total = self.root.winfo_height() - self.canvas.winfo_height() - toolbar_h
+        # selection rectangle inside the window
+        left   = x1
+        top    = y1 + toolbar_h
+        right  = x1 + w
+        bottom = y1 + h - (status_total if status_total > 0 else 0)
+
+        # Unique output path
+        fname = f"{self.base_name}-{suffix}.png"
+        out_path = os.path.join(SAVE_DIR, fname)
+        base_no_ext, ext = os.path.splitext(out_path)
+        n = 1
+        while os.path.exists(out_path):
+            out_path = f"{base_no_ext} ({n}){ext}"
+            n += 1
+
+        # Hide window so it never appears in the capture
+        self.root.withdraw()
+        self.root.update_idletasks()
+        time.sleep(0.15)
+
+        ok = False
+        try:
+            region = {
+                "left": int(left),
+                "top": int(top),
+                "width": int(right - left),
+                "height": int(bottom - top),
+            }
+            with mss.mss() as sct:
+                raw = sct.grab(region)
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                img.save(out_path)
+                ok = True
+        except Exception as e:
+            messagebox.showerror("Capture failed", f"Could not save screenshot:\n{e}")
+        finally:
+            # Restore window
+            self.root.deiconify()
+            # If it was collapsed before capture, collapse it back
+            if was_collapsed:
+                self.canvas.forget()
+                # shrink to toolbar again, preserve x,y
+                x = self.root.winfo_x()
+                y = self.root.winfo_y()
+                width = max(self.root.winfo_width(), 320)
+                toolbar_h = self.toolbar.winfo_reqheight()
+                status_h  = self.root.winfo_height() - self.canvas.winfo_reqheight() - (self.toolbar.winfo_height() or 0)
+                height = max(toolbar_h + (status_h if status_h > 0 else 30), 40)
+                self.root.geometry(f"{width}x{height}+{x}+{y}")
+                self.collapsed = True
+                self.collapse_var.set("Expand")
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+
+        if ok:
+            self.status_var.set(f"Saved: {out_path}")
+            self._flash_outline()
+
+    def _flash_outline(self):
+        if self.collapsed:
+            return
+        try:
+            for _ in range(2):
+                for item in self.canvas.find_all():
+                    self.canvas.itemconfig(item, outline="#ffffff")
+                self.root.update()
+                time.sleep(0.05)
+                for item in self.canvas.find_all():
+                    self.canvas.itemconfig(item, outline="#00ffff")
+                self.root.update()
+                time.sleep(0.05)
+        except Exception:
+            pass
+
+
+def main():
+    root = tk.Tk()
+    app = OverlayApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
