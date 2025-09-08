@@ -1,1 +1,198 @@
+import os
+import time
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+from PIL import ImageGrab
+import datetime
+import sys
+
+# --- (Windows) Make the process DPI aware so coords match physical pixels ---
+if sys.platform.startswith("win"):
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+SAVE_DIR = r"C:\Files"
+
+class OverlayApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Screen Overlay")
+        self.root.attributes("-topmost", True)
+
+        # Start slightly see-through
+        self.alpha = 0.35
+        self.set_alpha(self.alpha)
+
+        # Reasonable default size/pos
+        self.root.geometry("800x450+100+100")
+
+        # Base name for files
+        self.base_name = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
+
+        # Ensure save directory exists
+        os.makedirs(SAVE_DIR, exist_ok=True)
+
+        # Build UI
+        self.build_ui()
+
+        # Key bindings
+        self.root.bind("<space>", self.ask_name_popup)
+        self.root.bind("<Control-1>", lambda e: self.save_with_suffix("A"))
+        self.root.bind("<Control-2>", lambda e: self.save_with_suffix("B"))
+        self.root.bind("<Control-3>", lambda e: self.save_with_suffix("C"))
+        self.root.bind("<Control-4>", lambda e: self.save_with_suffix("D"))
+        self.root.bind("<Control-5>", lambda e: self.save_with_suffix("E"))
+
+        # Mouse wheel to adjust opacity
+        # Windows uses <MouseWheel>, others use Button-4/5. We'll support both.
+        self.root.bind("<MouseWheel>", self.on_wheel)
+        self.root.bind("<Button-4>", lambda e: self.adjust_alpha(+0.05))
+        self.root.bind("<Button-5>", lambda e: self.adjust_alpha(-0.05))
+
+        # Update title with current base name
+        self.update_title()
+
+    def build_ui(self):
+        # Top toolbar with buttons A–E and controls
+        toolbar = tk.Frame(self.root, bg="#222", padx=6, pady=6)
+        toolbar.pack(side="top", anchor="nw", fill="x")
+
+        make = lambda s: tk.Button(
+            toolbar, text=s, width=4, command=lambda suf=s: self.save_with_suffix(suf)
+        )
+        self.btnA = make("A")
+        self.btnB = make("B")
+        self.btnC = make("C")
+        self.btnD = make("D")
+        self.btnE = make("E")
+        for b in (self.btnA, self.btnB, self.btnC, self.btnD, self.btnE):
+            b.pack(side="left", padx=4)
+
+        tk.Label(toolbar, text="  |  ", bg="#222", fg="#ccc").pack(side="left")
+
+        tk.Button(toolbar, text="Set Name (Space)", command=self.ask_name_popup).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Capture Now", command=lambda: self.save_with_suffix("A")).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Quit", command=self.root.destroy).pack(side="left", padx=4)
+
+        # Info/status at bottom
+        status = tk.Frame(self.root, bg="#111")
+        status.pack(side="bottom", fill="x")
+        self.status_var = tk.StringVar(value=f"Saving to {SAVE_DIR}")
+        tk.Label(status, textvariable=self.status_var, bg="#111", fg="#ddd", anchor="w").pack(side="left", padx=8, pady=4)
+
+        # Fill area with a subtle outline to “see” the selection region
+        self.canvas = tk.Canvas(self.root, highlightthickness=0, bg="")
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self.draw_outline)
+
+    def draw_outline(self, event=None):
+        self.canvas.delete("all")
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        # Leave a tiny margin for the outline
+        margin = 3
+        self.canvas.create_rectangle(
+            margin, margin, w - margin, h - margin,
+            outline="#00ffff", width=2
+        )
+        self.canvas.create_text(
+            10, 10, anchor="nw",
+            text="Resize this window to set the capture area.\nMouse wheel: opacity.",
+            fill="#00ffff"
+        )
+
+    def on_wheel(self, event):
+        # event.delta is positive/negative in steps of 120 on Windows
+        delta = 0.05 if event.delta > 0 else -0.05
+        self.adjust_alpha(delta)
+
+    def adjust_alpha(self, delta):
+        self.alpha = max(0.05, min(0.95, self.alpha + delta))
+        self.set_alpha(self.alpha)
+        self.status_var.set(f"Opacity: {int(self.alpha*100)}%   |   Saving to {SAVE_DIR}")
+
+    def set_alpha(self, a):
+        try:
+            self.root.attributes("-alpha", a)
+        except tk.TclError:
+            # Some systems/window managers may not support alpha
+            pass
+
+    def ask_name_popup(self, event=None):
+        name = simpledialog.askstring("Base File Name", "Enter a base name:", initialvalue=self.base_name, parent=self.root)
+        if name:
+            # sanitize a bit
+            self.base_name = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
+            if not self.base_name:
+                self.base_name = "capture"
+            self.update_title()
+
+    def update_title(self):
+        self.root.title(f"Screen Overlay  —  Base name: {self.base_name}")
+
+    def save_with_suffix(self, suffix):
+        # Compute bbox BEFORE hiding
+        x1 = self.root.winfo_rootx()
+        y1 = self.root.winfo_rooty()
+        x2 = x1 + self.root.winfo_width()
+        y2 = y1 + self.root.winfo_height()
+        bbox = (x1, y1, x2, y2)
+
+        # Build output path, avoid overwriting by adding (1), (2), ...
+        filename = f"{self.base_name}-{suffix}.png"
+        out_path = os.path.join(SAVE_DIR, filename)
+        base_no_ext, ext = os.path.splitext(out_path)
+        counter = 1
+        while os.path.exists(out_path):
+            out_path = f"{base_no_ext} ({counter}){ext}"
+            counter += 1
+
+        try:
+            # Hide, wait a beat, capture, show again
+            self.root.withdraw()
+            self.root.update_idletasks()
+            time.sleep(0.18)  # small delay ensures the window is fully hidden
+
+            # Dual-monitor friendly: bbox uses absolute (can be negative on left monitor)
+            img = ImageGrab.grab(bbox=bbox)
+
+            img.save(out_path)
+            saved = True
+        except Exception as e:
+            saved = False
+            messagebox.showerror("Capture failed", f"Could not save screenshot:\n{e}")
+        finally:
+            # Bring it back
+            self.root.deiconify()
+            self.root.lift()
+            self.root.attributes("-topmost", True)
+
+        if saved:
+            self.status_var.set(f"Saved: {out_path}")
+            # Brief visual flash of the border
+            self.flash_outline()
+
+    def flash_outline(self):
+        try:
+            for _ in range(2):
+                self.canvas.itemconfig("all", outline="#ffffff")
+                self.root.update()
+                time.sleep(0.05)
+                self.canvas.itemconfig("all", outline="#00ffff")
+                self.root.update()
+                time.sleep(0.05)
+        except Exception:
+            pass
+
+
+def main():
+    root = tk.Tk()
+    app = OverlayApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
 
