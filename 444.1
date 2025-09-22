@@ -1,0 +1,974 @@
+
+# === Screen Overlay + Driver + UIA Automation + Profiles + Unified Overlay ===
+# Dependencies (Windows 10+):
+#   pip install pywinauto pillow mss
+#
+# CSV (read-only): C:/Data/Sets/Input.csv
+# Columns:
+#   A: Trade ID   B: Date   C: Time   D: Security Type (e.g., "Swap")   E: Value(s) [optional]
+
+import os
+import sys
+import time
+import datetime
+import csv
+import json
+from pathlib import Path
+import tkinter as tk
+from tkinter import simpledialog, messagebox, ttk
+
+from PIL import Image
+import mss
+
+# --- UI Automation (no mouse moves) ---
+try:
+    from pywinauto import Desktop
+    from pywinauto.uia_element_info import UIAElementInfo
+    from pywinauto.controls.uiawrapper import UIAWrapper
+    from pywinauto import keyboard as pwkbd
+except Exception:
+    Desktop = None
+    UIAElementInfo = None
+    UIAWrapper = None
+    pwkbd = None
+
+# --- Make process DPI aware on Windows ---
+if sys.platform.startswith("win"):
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor V2
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+SAVE_DIR  = r"C:\Files"               # original default
+INPUT_CSV = r"C:\Data\Sets\Input.csv"  # per your spec
+
+APP_DIR      = Path(os.getenv("APPDATA", str(Path.home()))) / "ScreenOverlay"
+PROFILES_DIR = APP_DIR / "profiles"
+PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+
+# -----------------------
+# Helpers: cursor/element
+# -----------------------
+def _get_cursor_pos():
+    if not sys.platform.startswith("win"):
+        return None
+    import ctypes
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    pt = POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return (pt.x, pt.y)
+
+def _element_from_point():
+    if Desktop is None or UIAElementInfo is None:
+        return None
+    pos = _get_cursor_pos()
+    if pos is None:
+        return None
+    try:
+        info = UIAElementInfo.from_point(pos)
+        return UIAWrapper(info)
+    except Exception:
+        return None
+
+def _safe_set_text(ctrl: UIAWrapper, text: str) -> bool:
+    if ctrl is None:
+        return False
+    try:
+        if hasattr(ctrl, "set_value"):
+            ctrl.set_value(text or "")
+            return True
+    except Exception:
+        pass
+    try:
+        if hasattr(ctrl, "set_edit_text"):
+            ctrl.set_edit_text(text or "")
+            return True
+    except Exception:
+        pass
+    try:
+        ctrl.set_focus()
+        time.sleep(0.03)
+        pwkbd.send_keys("^a")
+        time.sleep(0.02)
+        r = tk._default_root
+        if r:
+            r.clipboard_clear()
+            r.clipboard_append(text or "")
+            r.update_idletasks()
+            time.sleep(0.01)
+        pwkbd.send_keys("^v")
+        return True
+    except Exception:
+        return False
+
+def _safe_invoke(ctrl: UIAWrapper, double=False) -> bool:
+    if ctrl is None:
+        return False
+    try:
+        if hasattr(ctrl, "invoke"):
+            ctrl.invoke()
+            if double:
+                time.sleep(0.05)
+                ctrl.invoke()
+            return True
+    except Exception:
+        pass
+    try:
+        ctrl.set_focus()
+        time.sleep(0.02)
+        pwkbd.send_keys("{ENTER}")
+        if double:
+            time.sleep(0.05)
+            pwkbd.send_keys("{ENTER}")
+        return True
+    except Exception:
+        return False
+
+# ---------------
+# Prompt Pane (for the earlier multi-window mode — still available)
+# ---------------
+class PromptPane(tk.Toplevel):
+    def __init__(self, master, title, alpha=0.35, has_entry=False, entry_var=None):
+        super().__init__(master)
+        self.title(title)
+        self.attributes("-topmost", True)
+        self.alpha = alpha
+        try:
+            self.attributes("-alpha", self.alpha)
+        except tk.TclError:
+            pass
+        self.geometry("240x100+50+50")
+        self.configure(bg="#202020")
+
+        bar = tk.Frame(self, bg="#222", padx=6, pady=6)
+        bar.pack(side="top", fill="x")
+        self.collapse_var = tk.StringVar(value="Collapse")
+        tk.Label(bar, text=title, fg="#0ff", bg="#222").pack(side="left")
+        tk.Button(bar, textvariable=self.collapse_var, width=9, command=self.toggle).pack(side="right")
+
+        body = tk.Frame(self, bg="#202020")
+        body.pack(fill="both", expand=True)
+        self.body = body
+
+        if has_entry:
+            self.entry = tk.Entry(body, textvariable=entry_var, relief="solid")
+            self.entry.pack(padx=8, pady=10, fill="x")
+        else:
+            tk.Label(body, text="Floating pane", fg="#ddd", bg="#202020").pack(padx=8, pady=16)
+
+        self.bind("<MouseWheel>", self._on_wheel)
+        self.bind("<Button-4>", lambda e: self._adjust_alpha(+0.05))
+        self.bind("<Button-5>", lambda e: self._adjust_alpha(-0.05))
+
+    def toggle(self):
+        if self.body.winfo_viewable():
+            self.body.forget()
+            self.collapse_var.set("Expand")
+            self.geometry(f"{max(self.winfo_width(), 220)}x45+{self.winfo_x()}+{self.winfo_y()}")
+        else:
+            self.body.pack(fill="both", expand=True)
+            self.collapse_var.set("Collapse")
+
+    def _on_wheel(self, e):
+        self._adjust_alpha(+0.05 if e.delta > 0 else -0.05)
+
+    def _adjust_alpha(self, delta):
+        self.alpha = max(0.05, min(0.95, self.alpha + delta))
+        try:
+            self.attributes("-alpha", self.alpha)
+        except tk.TclError:
+            pass
+
+# ----------------
+# Profile Manager (for Driver + panes)
+# ----------------
+class ProfileManager:
+    def __init__(self, app):
+        self.app = app
+
+    def profile_path(self, name: str) -> Path:
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip() or "Default"
+        return PROFILES_DIR / f"{safe}.json"
+
+    def save(self, name: str):
+        data = {
+            "driver": {
+                "row": self.app.driver.row_var.get(),
+                "waiting_ms": self.app.driver.wait_var.get(),
+                "use_csv_values": self.app.driver.use_csv_values.get(),
+                "autodetect": self.app.driver.autodetect_var.get(),
+                "profile_name": self.app.driver.profile_var.get(),
+            },
+            "panes": {
+                key: {
+                    "geometry": win.geometry(),
+                    "alpha": getattr(win, "alpha", 0.3),
+                    "collapsed": not win.body.winfo_viewable(),
+                }
+                for key, win in self.app.panes.items()
+            },
+        }
+        path = self.profile_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return str(path)
+
+    def load(self, name: str) -> bool:
+        path = self.profile_path(name)
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+
+        drv = data.get("driver", {})
+        if "row" in drv: self.app.driver.row_var.set(int(drv["row"]))
+        if "waiting_ms" in drv:
+            w = int(drv["waiting_ms"])
+            self.app.driver.wait_var.set(w)
+            self.app.waiting_var.set(str(w))
+        if "use_csv_values" in drv:
+            self.app.driver.use_csv_values.set(bool(drv["use_csv_values"]))
+        if "autodetect" in drv:
+            self.app.driver.autodetect_var.set(bool(drv["autodetect"]))
+        if "profile_name" in drv:
+            self.app.driver.profile_var.set(drv["profile_name"])
+
+        panes = data.get("panes", {})
+        for title, conf in panes.items():
+            win = self.app.panes.get(title)
+            if not win:
+                continue
+            geo = conf.get("geometry")
+            if geo:
+                try:
+                    w, h, x, y = self._parse_geometry(geo)
+                    win.geometry(f"{w}x{h}+{max(x,0)}+{max(y,0)}")
+                except Exception:
+                    pass
+            if "alpha" in conf:
+                try:
+                    win.alpha = float(conf["alpha"])
+                    win.attributes("-alpha", win.alpha)
+                except Exception:
+                    pass
+            want_collapsed = bool(conf.get("collapsed"))
+            is_collapsed = not win.body.winfo_viewable()
+            if want_collapsed != is_collapsed:
+                win.toggle()
+        return True
+
+    def _parse_geometry(self, g):
+        size, pos = g.split("+", 1)
+        w, h = size.split("x")
+        x, y = pos.split("+")
+        return int(w), int(h), int(x), int(y)
+
+# ----------------
+# Target Manager
+# ----------------
+class TargetManager:
+    def __init__(self):
+        self.targets = {k: None for k in ("date","time","trade","values","apply","load","enter")}
+    def set(self, key, wrapper): self.targets[key] = wrapper
+    def get(self, key): return self.targets.get(key)
+
+# --------------
+# Driver Window
+# --------------
+class DriverWindow(tk.Toplevel):
+    def __init__(self, master, overlay_app):
+        super().__init__(master)
+        self.title("Driver")
+        self.attributes("-topmost", True)
+        self.geometry("380x380+100+100")
+        self.configure(bg="#1a1a1a")
+        self.app = overlay_app
+        self.tm  = overlay_app.target_manager
+
+        root = tk.Frame(self, bg="#1a1a1a", padx=8, pady=8)
+        root.pack(fill="both", expand=True)
+
+        # Profiles
+        prof_fr = tk.Frame(root, bg="#1a1a1a")
+        prof_fr.pack(fill="x", pady=(2,2))
+        tk.Label(prof_fr, text="Profile", fg="#eee", bg="#1a1a1a").pack(side="left")
+        self.profile_var = tk.StringVar(value="Swap")
+        self.profile_box = ttk.Combobox(prof_fr, textvariable=self.profile_var, values=["Swap"], width=16, state="normal")
+        self.profile_box.pack(side="left", padx=6)
+        tk.Button(prof_fr, text="Load", command=self._load_profile).pack(side="left", padx=4)
+        tk.Button(prof_fr, text="Save", command=self._save_profile).pack(side="left", padx=4)
+
+        self.autodetect_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(root, text="Auto-detect profile from CSV (col D)", variable=self.autodetect_var,
+                       fg="#eee", bg="#1a1a1a", selectcolor="#333").pack(anchor="w", pady=(2,6))
+
+        # Row + Waiting + Use CSV Values
+        row_fr = tk.Frame(root, bg="#1a1a1a")
+        row_fr.pack(fill="x")
+        tk.Label(row_fr, text="CSV Row", fg="#eee", bg="#1a1a1a").pack(side="left")
+        self.row_var = tk.IntVar(value=2)
+        tk.Spinbox(row_fr, from_=2, to=1000000, textvariable=self.row_var, width=7).pack(side="left", padx=6)
+
+        wait_fr = tk.Frame(root, bg="#1a1a1a")
+        wait_fr.pack(fill="x", pady=(6,0))
+        tk.Label(wait_fr, text="Waiting (ms)", fg="#eee", bg="#1a1a1a").pack(side="left")
+        self.wait_var = tk.IntVar(value=150)
+        tk.Entry(wait_fr, textvariable=self.wait_var, width=8).pack(side="left", padx=6)
+
+        self.use_csv_values = tk.BooleanVar(value=True)
+        tk.Checkbutton(root, text='Use CSV "E" for Value(s) (else pane entry)', variable=self.use_csv_values,
+                       fg="#eee", bg="#1a1a1a", selectcolor="#333").pack(anchor="w", pady=(6,6))
+
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=6)
+        tk.Label(root, text="Learn Targets", fg="#0ff", bg="#1a1a1a").pack(anchor="w")
+
+        self.learn_status = tk.StringVar(value="Hover a control in your app and capture it.")
+        tk.Label(root, textvariable=self.learn_status, fg="#ccc", bg="#1a1a1a", wraplength=340, justify="left").pack(anchor="w", pady=(2,6))
+
+        grid = tk.Frame(root, bg="#1a1a1a")
+        grid.pack(fill="x")
+        self._mk_learn_row(grid, "1. Date",   "date",   0)
+        self._mk_learn_row(grid, "2. Time",   "time",   1)
+        self._mk_learn_row(grid, "3. Trade",  "trade",  2)
+        self._mk_learn_row(grid, "4. Values", "values", 3)
+        self._mk_learn_row(grid, "5. Apply",  "apply",  4)
+        self._mk_learn_row(grid, "6. Load",   "load",   5)
+        self._mk_learn_row(grid, "7. Enter",  "enter",  6)
+
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=6)
+        tk.Button(root, text="Prep Next from CSV  (Ctrl+Shift+P)", command=self.app.prep_next_from_csv).pack(fill="x", pady=(6,2))
+        self.status_var = tk.StringVar(value=f"CSV: {INPUT_CSV} | Row: 2 | Waiting: 150 ms")
+        tk.Label(root, textvariable=self.status_var, fg="#ddd", bg="#1a1a1a").pack(anchor="w", pady=4)
+
+        self.bind_all("<Control-Shift-P>", lambda e: self.app.prep_next_from_csv())
+
+    def _mk_learn_row(self, parent, label, key, r):
+        fr = tk.Frame(parent, bg="#1a1a1a")
+        fr.grid(row=r, column=0, sticky="w", pady=2)
+        tk.Label(fr, text=label, fg="#eee", bg="#1a1a1a", width=12, anchor="w").pack(side="left")
+        tk.Button(fr, text="Capture", command=lambda k=key: self._capture_target(k)).pack(side="left", padx=4)
+        tk.Button(fr, text="Test",    command=lambda k=key: self._test_target(k)).pack(side="left", padx=4)
+
+    def _capture_target(self, key):
+        if Desktop is None:
+            messagebox.showerror("Missing dependency", "pywinauto not installed. Run: pip install pywinauto")
+            return
+        d = tk.Toplevel(self)
+        d.title("Capture")
+        d.attributes("-topmost", True)
+        tk.Label(d, text=f"Hover the {key.upper()} control, then press Enter").pack(padx=12, pady=12)
+        def _do_cap(_e=None):
+            w = _element_from_point()
+            if w is None:
+                messagebox.showwarning("Capture failed", "No UI element detected at cursor.")
+            else:
+                self.app.target_manager.set(key, w)
+                messagebox.showinfo("Captured", f"{key.upper()} captured ✓")
+            d.destroy()
+        d.bind("<Return>", _do_cap)
+        d.bind("<KP_Enter>", _do_cap)
+        d.bind("<Escape>", lambda e: d.destroy())
+        d.mainloop()
+        self.learn_status.set(f"{key.upper()} target: {'set' if self.app.target_manager.get(key) else 'not set'}")
+
+    def _test_target(self, key):
+        w = self.app.target_manager.get(key)
+        if w is None:
+            messagebox.showwarning("Not set", f"No target captured for: {key.upper()}")
+            return
+        try:
+            if key in ("date","time","trade","values"):
+                ok = _safe_set_text(w, "[test]")
+            else:
+                ok = _safe_invoke(w, double=(key == "enter"))
+            messagebox.showinfo("Test", f"{key.upper()} test: {'OK' if ok else 'FAILED'}")
+        except Exception as e:
+            messagebox.showerror("Test error", f"{key.upper()} error:\n{e}")
+
+    def _save_profile(self):
+        name = self.profile_var.get().strip() or "Default"
+        path = self.app.profile_manager.save(name)
+        vals = list(dict.fromkeys(list(self.profile_box["values"]) + [name]))
+        self.profile_box["values"] = vals
+        messagebox.showinfo("Profile saved", f"Saved to:\n{path}")
+
+    def _load_profile(self):
+        name = self.profile_var.get().strip() or "Default"
+        ok = self.app.profile_manager.load(name)
+        if not ok:
+            messagebox.showwarning("Profile not found", f"No profile named '{name}'. Arrange panes and Save to create it.")
+        else:
+            self.update_status()
+
+    def update_status(self):
+        self.status_var.set(f"CSV: {INPUT_CSV} | Row: {self.row_var.get()} | Waiting: {self.wait_var.get()} ms")
+
+# ---------------------------
+# Unified Overlay (single window with zones)
+# ---------------------------
+_IS_WIN = sys.platform.startswith("win")
+if _IS_WIN:
+    import ctypes
+    GWL_EXSTYLE = -20
+    WS_EX_LAYERED = 0x00080000
+    WS_EX_TRANSPARENT = 0x00000020
+    SetWindowLongW = ctypes.windll.user32.SetWindowLongW
+    GetWindowLongW = ctypes.windll.user32.GetWindowLongW
+    SetLayeredWindowAttributes = ctypes.windll.user32.SetLayeredWindowAttributes
+
+def _make_clickthrough(hwnd, enable=True):
+    if not _IS_WIN or not hwnd:
+        return
+    styles = GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if enable:
+        styles |= (WS_EX_LAYERED | WS_EX_TRANSPARENT)
+    else:
+        styles &= ~(WS_EX_TRANSPARENT)
+    SetWindowLongW(hwnd, GWL_EXSTYLE, styles)
+    SetLayeredWindowAttributes(hwnd, 0, 255, 0x02)
+
+class UnifiedOverlay(tk.Toplevel):
+    ZONES = [
+        "1. Date", "2. Time", "3. Trade ID", "4. Value(s)",
+        "5. Apply", "6. Load", "7. Enter", "8. Waiting"
+    ]
+
+    def __init__(self, master, profile_name="Swap"):
+        super().__init__(master)
+        self.title("Unified Overlay")
+        self.attributes("-topmost", True)
+        self.overrideredirect(True)
+        try: self.attributes("-alpha", 0.25)
+        except tk.TclError: pass
+        self.configure(bg="")
+        self.geometry("700x500+200+200")
+
+        self.title_bar = tk.Frame(self, bg="#111111", height=28)
+        self.title_bar.pack(side="top", fill="x")
+        self.title_bar.bind("<ButtonPress-1>", self._start_drag_overlay)
+        self.title_bar.bind("<B1-Motion>", self._drag_overlay)
+
+        self.mode_var = tk.StringVar(value="EDIT")
+        tk.Label(self.title_bar, text="Unified Overlay", fg="#0ff", bg="#111111").pack(side="left", padx=8)
+        tk.Button(self.title_bar, text="Save", command=self._save_profile, takefocus=False).pack(side="right", padx=4)
+        tk.Button(self.title_bar, text="Load", command=self._load_profile, takefocus=False).pack(side="right", padx=4)
+        tk.Button(self.title_bar, textvariable=self.mode_var, command=self._toggle_mode, takefocus=False).pack(side="right", padx=8)
+        self.profile_var = tk.StringVar(value=profile_name)
+        tk.Entry(self.title_bar, textvariable=self.profile_var, width=14).pack(side="right", padx=6)
+
+        self.canvas = tk.Canvas(self, bg="", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
+
+        self.zones = {}
+        self._init_default_layout()
+
+        self._active_zone = None
+        self._drag_kind = None
+        self._drag_off = (0, 0)
+        self._drag_start_geom = None
+
+        self.canvas.bind("<ButtonPress-1>", self._on_down)
+        self.canvas.bind("<B1-Motion>", self._on_move)
+        self.canvas.bind("<ButtonRelease-1>", self._on_up)
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Control-s>", lambda e: self._save_profile())
+        self.bind("<Control-o>", lambda e: self._load_profile())
+
+        self._apply_click_through(False)
+
+    def _start_drag_overlay(self, e):
+        self._drag_start_geom = (self.winfo_x(), self.winfo_y())
+        self._drag_off = (e.x_root, e.y_root)
+
+    def _drag_overlay(self, e):
+        if not self._drag_start_geom: return
+        dx = e.x_root - self._drag_off[0]
+        dy = e.y_root - self._drag_off[1]
+        x = self._drag_start_geom[0] + dx
+        y = self._drag_start_geom[1] + dy
+        self.geometry(f"+{x}+{y}")
+
+    def _init_default_layout(self):
+        W, H = 320, 80
+        x0, y0, pad = 20, 40, 16
+        coords = [
+            (x0, y0), (x0, y0+H+pad), (x0, y0+2*(H+pad)), (x0, y0+3*(H+pad)),
+            (x0+W+pad, y0), (x0+W+pad, y0+H+pad), (x0+W+pad, y0+2*(H+pad)), (x0+W+pad, y0+3*(H+pad)),
+        ]
+        for name, (x, y) in zip(self.ZONES, coords):
+            self.zones[name] = {"x": x, "y": y, "w": W, "h": H}
+        self._redraw()
+
+    def _redraw(self):
+        self.canvas.delete("all")
+        for name, r in self.zones.items():
+            x, y, w, h = r["x"], r["y"], r["w"], r["h"]
+            self.canvas.create_rectangle(
+                x, y, x+w, y+h,
+                outline="#00ffff" if self.mode_var.get()=="EDIT" else "#00ffaa",
+                width=2, fill=""
+            )
+            self.canvas.create_text(x+8, y+8, text=name, anchor="nw", fill="#00ffff")
+            self.canvas.create_rectangle(x+w-10, y+h-10, x+w, y+h, fill="#00ffff", outline="")
+            r["rect_id"] = True
+
+    def _hit_zone(self, x, y):
+        for name, r in reversed(list(self.zones.items())):
+            if r["x"] <= x <= r["x"]+r["w"] and r["y"] <= y <= r["y"]+r["h"]:
+                if (r["x"]+r["w"]-12 <= x <= r["x"]+r["w"]) and (r["y"]+r["h"]-12 <= y <= r["y"]+r["h"]):
+                    return name, "resize"
+                return name, "move"
+        return None, None
+
+    def _on_down(self, e):
+        if self.mode_var.get() != "EDIT": return
+        x = self.canvas.canvasx(e.x); y = self.canvas.canvasy(e.y)
+        name, kind = self._hit_zone(x, y)
+        self._active_zone = name
+        self._drag_kind = kind
+        self._drag_off = (x, y)
+
+    def _on_move(self, e):
+        if self.mode_var.get() != "EDIT" or not self._active_zone: return
+        x = self.canvas.canvasx(e.x); y = self.canvas.canvasy(e.y)
+        dx = x - self._drag_off[0]; dy = y - self._drag_off[1]
+        z = self.zones[self._active_zone]
+        if self._drag_kind == "move":
+            z["x"] = max(0, z["x"] + dx)
+            z["y"] = max(0, z["y"] + dy)
+        elif self._drag_kind == "resize":
+            z["w"] = max(40, z["w"] + dx)
+            z["h"] = max(30, z["h"] + dy)
+        self._drag_off = (x, y)
+        self._redraw()
+
+    def _on_up(self, _e):
+        self._active_zone = None
+        self._drag_kind = None
+
+    def _toggle_mode(self):
+        new_mode = "LIVE" if self.mode_var.get() == "EDIT" else "EDIT"
+        self.mode_var.set(new_mode)
+        self._apply_click_through(new_mode == "LIVE")
+        self._redraw()
+
+    def _apply_click_through(self, enable):
+        self.update_idletasks()
+        try:
+            if _IS_WIN:
+                hwnd = self.winfo_id()
+                _make_clickthrough(hwnd, enable)
+        except Exception:
+            pass
+        try:
+            self.attributes("-alpha", 0.20 if enable else 0.28)
+        except tk.TclError:
+            pass
+
+    def _profile_path(self, name):
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip() or "Default"
+        return PROFILES_DIR / f"unified_{safe}.json"
+
+    def _save_profile(self):
+        name = self.profile_var.get().strip() or "Default"
+        data = {k: dict(v) for k, v in self.zones.items()}
+        p = self._profile_path(name)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        messagebox.showinfo("Unified Overlay", f"Saved layout: {p}")
+
+    def _load_profile(self):
+        name = self.profile_var.get().strip() or "Default"
+        p = self._profile_path(name)
+        if not p.exists():
+            messagebox.showwarning("Unified Overlay", f"No saved layout named '{name}'.")
+            return
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            for k, v in data.items():
+                if k in self.zones:
+                    self.zones[k]["x"] = max(0, int(v.get("x", self.zones[k]["x"])))
+                    self.zones[k]["y"] = max(0, int(v.get("y", self.zones[k]["y"])))
+                    self.zones[k]["w"] = max(40, int(v.get("w", self.zones[k]["w"])))
+                    self.zones[k]["h"] = max(30, int(v.get("h", self.zones[k]["h"])))
+            self._redraw()
+        except Exception as e:
+            messagebox.showerror("Unified Overlay", f"Failed to load layout:\n{e}")
+
+# -------------
+# Overlay (original) + integration
+# -------------
+class OverlayApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Screen Overlay")
+        self.root.attributes("-topmost", True)
+
+        self.alpha = 0.35
+        self._set_alpha(self.alpha)
+        self.root.geometry("800x450+200+200")
+        os.makedirs(SAVE_DIR, exist_ok=True)
+
+        self.base_name = datetime.datetime.now().strftime("capture_%Y%m%d_%H%M%S")
+        self.collapsed = False
+        self.saved_geometry = None
+
+        # managers + driver + panes
+        self.target_manager = TargetManager()
+        self.profile_manager = ProfileManager(self)
+        self.driver = None
+        self.panes = {}
+
+        self._build_ui()
+
+        # Keys
+        self.root.bind("<space>", self._ask_name_popup)
+        self.root.bind("<Control-1>", lambda e: self.save_with_suffix("A", prompt=False))
+        self.root.bind("<Control-2>", lambda e: self.save_with_suffix("B", prompt=False))
+        self.root.bind("<Control-3>", lambda e: self.save_with_suffix("C", prompt=False))
+        self.root.bind("<Control-4>", lambda e: self.save_with_suffix("D", prompt=False))
+        self.root.bind("<Control-5>", lambda e: self.save_with_suffix("E", prompt=False))
+        self.root.bind("<MouseWheel>", self._on_wheel)
+        self.root.bind("<Button-4>", lambda e: self._adjust_alpha(+0.05))
+        self.root.bind("<Button-5>", lambda e: self._adjust_alpha(-0.05))
+
+        self._update_title()
+        self.root.after(200, self._open_driver_and_panes)
+
+    def _build_ui(self):
+        self.toolbar = tk.Frame(self.root, bg="#222", padx=6, pady=6)
+        self.toolbar.pack(side="top", anchor="nw", fill="x")
+
+        self.collapse_var = tk.StringVar(value="Collapse")
+        tk.Button(self.toolbar, textvariable=self.collapse_var, width=10, command=self.toggle_collapse).pack(side="left", padx=(0,8))
+
+        def mkbtn(label):
+            return tk.Button(self.toolbar, text=label, width=4, command=lambda s=label: self.save_with_suffix(s, prompt=True))
+        for lab in ["A","B","C","D","E"]:
+            mkbtn(lab).pack(side="left", padx=4)
+
+        tk.Label(self.toolbar, text="  |  ", bg="#222", fg="#ccc").pack(side="left")
+        tk.Button(self.toolbar, text="Set Name (Space)", command=self._ask_name_popup).pack(side="left", padx=4)
+        tk.Button(self.toolbar, text="Capture Now (A, no prompt)", command=lambda: self.save_with_suffix("A", prompt=False)).pack(side="left", padx=4)
+
+        tk.Button(self.toolbar, text="Prep Next from CSV", command=self.prep_next_from_csv).pack(side="left", padx=8)
+        tk.Button(self.toolbar, text="Unified Overlay", command=self._open_unified_overlay).pack(side="left", padx=8)
+
+        tk.Button(self.toolbar, text="Quit", command=self.root.destroy).pack(side="left", padx=4)
+
+        status = tk.Frame(self.root, bg="#111")
+        status.pack(side="bottom", fill="x")
+        self.status_var = tk.StringVar(value=f"Saving to {SAVE_DIR}")
+        tk.Label(status, textvariable=self.status_var, bg="#111", fg="#ddd", anchor="w").pack(side="left", padx=8, pady=4)
+
+        self.canvas = tk.Canvas(self.root, highlightthickness=0, bg=self.root["bg"])
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", self._draw_outline)
+
+    def _open_unified_overlay(self):
+        prof = "Swap"
+        try:
+            if self.driver and self.driver.profile_var.get().strip():
+                prof = self.driver.profile_var.get().strip()
+        except Exception:
+            pass
+        UnifiedOverlay(self.root, profile_name=prof)
+
+    def _open_driver_and_panes(self):
+        if self.driver is None:
+            self.driver = DriverWindow(self.root, self)
+
+        self.values_var  = tk.StringVar(value="")
+        self.waiting_var = tk.StringVar(value="150")
+
+        titles = [
+            ("1. Date",          False, None),
+            ("2. Time",          False, None),
+            ("3. Trade ID",      False, None),
+            ("4. Value(s)",      True,  self.values_var),
+            ("5. Apply",         False, None),
+            ("6. Load",          False, None),
+            ("7. Enter",         False, None),
+            ("8. Waiting (ms)",  True,  self.waiting_var),
+        ]
+        positions = [
+            "+1050+60", "+1050+180", "+1050+300", "+1050+420",
+            "+1300+60", "+1300+180", "+1300+300", "+1300+420",
+        ]
+        for (title, has_entry, var), geo in zip(titles, positions):
+            pane = PromptPane(self.root, title, alpha=0.30, has_entry=has_entry, entry_var=var)
+            pane.geometry("240x100" + geo)
+            self.panes[title] = pane
+
+        if self.driver.profile_var.get().strip():
+            self.profile_manager.load(self.driver.profile_var.get().strip())
+            self.driver.update_status()
+
+    def _draw_outline(self, _=None):
+        self.canvas.delete("all")
+        w = self.root.winfo_width()
+        h = self.root.winfo_height()
+        toolbar_h = self.toolbar.winfo_height() or 0
+        status_h = self.root.winfo_height() - self.canvas.winfo_height() - toolbar_h
+        m = 3
+        top = max(toolbar_h + m, 0)
+        bottom = h - status_h - m
+        left = m
+        right = w - m
+        if right - left > 6 and bottom - top > 6:
+            self.canvas.create_rectangle(left, top, right, bottom, outline="#00ffff", width=2)
+            self.canvas.create_text(10, toolbar_h + 10, anchor="nw",
+                text="Resize/move window to set capture area.\nMouse wheel: opacity.\nButtons A–E: prompt + save.",
+                fill="#00ffff")
+
+    # ---- transparency / collapse ----
+    def _on_wheel(self, e): self._adjust_alpha(+0.05 if e.delta > 0 else -0.05)
+    def _adjust_alpha(self, delta):
+        self.alpha = max(0.05, min(0.95, self.alpha + delta))
+        self._set_alpha(self.alpha)
+        self.status_var.set(f"Opacity: {int(self.alpha*100)}%   |   Saving to {SAVE_DIR}")
+    def _set_alpha(self, a):
+        try: self.root.attributes("-alpha", a)
+        except tk.TclError: pass
+
+    def toggle_collapse(self):
+        if not self.collapsed:
+            self.saved_geometry = self.root.geometry()
+            self.canvas.forget()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            self.root.update_idletasks()
+            width = max(self.root.winfo_width(), 320)
+            toolbar_h = self.toolbar.winfo_reqheight()
+            status_h  = self.root.winfo_height() - self.canvas.winfo_height() - (self.toolbar.winfo_height() or 0)
+            height = max(toolbar_h + (status_h if status_h > 0 else 30), 40)
+            self.root.geometry(f"{width}x{height}+{x}+{y}")
+            self.collapsed = True
+            self.collapse_var.set("Expand")
+            self.status_var.set("Overlay collapsed — click again to expand and capture.")
+        else:
+            if self.saved_geometry:
+                self.root.geometry(self.saved_geometry)
+            self.canvas.pack(fill="both", expand=True)
+            self.collapsed = False
+            self.collapse_var.set("Collapse")
+            self.status_var.set(f"Overlay expanded — ready. Saving to {SAVE_DIR}")
+        self.root.attributes("-topmost", True)
+        self.root.lift()
+
+    # ---- naming ----
+    def _get_clipboard_text(self) -> str:
+        try: return self.root.clipboard_get()
+        except Exception: return ""
+    def _prompt_and_set_base(self, title="Base File Name") -> bool:
+        default = self._get_clipboard_text().strip() or self.base_name
+        name = simpledialog.askstring(title, "Paste or type the base name:", initialvalue=default, parent=self.root)
+        if not name: return False
+        safe = "".join(c for c in name if c not in r'\/:*?"<>|').strip()
+        if not safe:
+            messagebox.showwarning("Invalid name", "Name cannot be empty after removing invalid characters.")
+            return False
+        self.base_name = safe
+        self._update_title()
+        return True
+    def _ask_name_popup(self, _=None): self._prompt_and_set_base("Base File Name")
+    def _update_title(self): self.root.title(f"Screen Overlay — Base name: {self.base_name}")
+
+    # ---- capture (original functionality) ----
+    def save_with_suffix(self, suffix: str, prompt: bool = False):
+        if prompt:
+            if not self._prompt_and_set_base(title=f"Save as … -{suffix}"):
+                return
+        was_collapsed = self.collapsed
+        if was_collapsed and self.saved_geometry:
+            self.canvas.pack(fill="both", expand=True)
+            self.root.geometry(self.saved_geometry)
+            self.root.update_idletasks()
+
+        self.root.update_idletasks()
+        x1 = self.root.winfo_rootx()
+        y1 = self.root.winfo_rooty()
+        w  = self.root.winfo_width()
+        h  = self.root.winfo_height()
+        toolbar_h = self.toolbar.winfo_height() or 0
+        status_total = self.root.winfo_height() - self.canvas.winfo_height() - toolbar_h
+
+        left, top   = x1, y1 + toolbar_h
+        right, bottom = x1 + w, y1 + h - (status_total if status_total > 0 else 0)
+
+        fname = f"{self.base_name}-{suffix}.png"
+        out_path = os.path.join(SAVE_DIR, fname)
+        base_no_ext, ext = os.path.splitext(out_path)
+        n = 1
+        while os.path.exists(out_path):
+            out_path = f"{base_no_ext} ({n}){ext}"
+            n += 1
+
+        self.root.withdraw()
+        self.root.update_idletasks()
+        time.sleep(0.15)
+
+        ok = False
+        try:
+            region = {"left": int(left), "top": int(top), "width": int(right-left), "height": int(bottom-top)}
+            with mss.mss() as sct:
+                raw = sct.grab(region)
+                img = Image.frombytes("RGBA", raw.size, raw.bgra, "raw", "BGRA")
+                img = img.convert("RGB")
+                img.save(out_path)
+                ok = True
+        except Exception as e:
+            messagebox.showerror("Capture failed", f"Could not save screenshot:\n{e}")
+        finally:
+            self.root.deiconify()
+            if was_collapsed:
+                self.canvas.forget()
+                x = self.root.winfo_x(); y = self.root.winfo_y()
+                width = max(self.root.winfo_width(), 320)
+                toolbar_h = self.toolbar.winfo_reqheight()
+                status_h  = self.root.winfo_height() - self.canvas.winfo_reqheight() - (self.toolbar.winfo_height() or 0)
+                height = max(toolbar_h + (status_h if status_h > 0 else 30), 40)
+                self.root.geometry(f"{width}x{height}+{x}+{y}")
+                self.collapsed = True
+                self.collapse_var.set("Expand")
+            self.root.lift(); self.root.attributes("-topmost", True)
+
+        if ok:
+            self.status_var.set(f"Saved: {out_path}")
+            self._flash_outline()
+
+    def _flash_outline(self):
+        if self.collapsed: return
+        try:
+            for _ in range(2):
+                for item in self.canvas.find_all(): self.canvas.itemconfig(item, outline="#ffffff")
+                self.root.update(); time.sleep(0.05)
+                for item in self.canvas.find_all(): self.canvas.itemconfig(item, outline="#00ffff")
+                self.root.update(); time.sleep(0.05)
+        except Exception:
+            pass
+
+    # ---- CSV-driven automation (no mouse) ----
+    def prep_next_from_csv(self):
+        if Desktop is None or UIAWrapper is None:
+            messagebox.showerror("Dependency missing", "pywinauto is required. Install with:\n\npip install pywinauto")
+            return
+        if self.driver is None:
+            messagebox.showerror("Driver missing", "Driver window not initialized yet.")
+            return
+        self.driver.update_status()
+
+        row = self.driver.row_var.get()
+        wait_ms = self._read_wait_ms()
+
+        if not os.path.exists(INPUT_CSV):
+            messagebox.showerror("CSV not found", f"Could not find:\n{INPUT_CSV}")
+            return
+        try:
+            with open(INPUT_CSV, "r", newline="", encoding="utf-8-sig") as f:
+                reader = csv.reader(f)
+                rows = list(reader)
+        except Exception as e:
+            messagebox.showerror("CSV error", f"Could not read CSV:\n{e}")
+            return
+
+        if row - 1 >= len(rows):
+            messagebox.showwarning("End of file", f"Row {row} is beyond the end of CSV.")
+            return
+
+        rec = rows[row - 1]
+        def cell(idx): return (rec[idx].strip() if idx < len(rec) and rec[idx] is not None else "")
+
+        trade      = cell(0)  # A
+        date       = cell(1)  # B
+        timev      = cell(2)  # C
+        security   = cell(3)  # D
+        csv_values = cell(4)  # E
+
+        if not trade or not date or not timev:
+            messagebox.showwarning("Missing data", f"Row {row} must have A,B,C (Trade, Date, Time).")
+            return
+
+        vals = csv_values if (self.driver.use_csv_values.get() and csv_values) else self.values_var.get().strip()
+
+        if self.driver.autodetect_var.get() and security:
+            self.driver.profile_var.set(security)
+            loaded = self.profile_manager.load(security)
+            if not loaded:
+                vals_list = list(self.driver.profile_box["values"])
+                if security not in vals_list:
+                    self.driver.profile_box["values"] = vals_list + [security]
+                self.status_var.set(f"Profile '{security}' not found; using current layout. Arrange panes and Save to create it.")
+            self.driver.update_status()
+
+        t_date  = self.target_manager.get("date")
+        t_time  = self.target_manager.get("time")
+        t_trade = self.target_manager.get("trade")
+        t_vals  = self.target_manager.get("values")
+        t_apply = self.target_manager.get("apply")
+        t_load  = self.target_manager.get("load")
+        t_enter = self.target_manager.get("enter")
+
+        missing = [k for k,v in {"date":t_date,"time":t_time,"trade":t_trade,"values":t_vals,"apply":t_apply,"load":t_load,"enter":t_enter}.items() if v is None]
+        if missing:
+            messagebox.showwarning("Targets not learned", f"Missing targets: {', '.join(m.upper() for m in missing)}")
+            return
+
+        ok = True
+        try:
+            ok = _safe_set_text(t_date,  date)  and ok
+            ok = _safe_set_text(t_time,  timev) and ok
+            ok = _safe_set_text(t_trade, trade) and ok
+            if vals:
+                ok = _safe_set_text(t_vals,  vals)  and ok
+            ok = _safe_invoke(t_apply) and ok
+            ok = _safe_invoke(t_load)  and ok
+            time.sleep(max(0, wait_ms) / 1000.0)
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(trade)
+                self.root.update_idletasks()
+            except Exception:
+                pass
+            ok = _safe_invoke(t_enter, double=True) and ok
+        except Exception as e:
+            messagebox.showerror("Automation error", f"Sequence failed:\n{e}")
+            return
+
+        if not ok:
+            messagebox.showwarning("Partial success", "Some steps may have failed (non-fatal). Check your app/targets.")
+
+        self.driver.row_var.set(row + 1)
+        self.driver.update_status()
+        self.status_var.set(f"Prepped row {row}: Trade={trade} | Waiting={wait_ms}ms (clipboard set to Trade ID)")
+
+    def _read_wait_ms(self):
+        try:
+            pane_wait = int(self.waiting_var.get())
+            self.driver.wait_var.set(pane_wait)
+            return pane_wait
+        except Exception:
+            pass
+        try:
+            drv_wait = int(self.driver.wait_var.get())
+            self.waiting_var.set(str(drv_wait))
+            return drv_wait
+        except Exception:
+            return 150
+
+# ---- main ----
+def main():
+    root = tk.Tk()
+    app = OverlayApp(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
