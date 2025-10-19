@@ -1,3 +1,79 @@
+
+# --- Reorder and clean up columns ---
+    $desiredOrder = @("dog","cat","bird","age","height")
+    $headerRow = 1
+    $usedRange = $sheet.UsedRange
+    $colCount = $usedRange.Columns.Count
+
+    if ($colCount -eq 0) {
+        throw "No data detected in the worksheet."
+    }
+
+    # Map headers and identify which to keep
+    $colMap = @{}
+    for ($i = 1; $i -le $colCount; $i++) {
+        $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
+        if ($desiredOrder -contains $header) {
+            $colMap[$header] = $i
+        }
+    }
+
+    # Delete all other columns (right-to-left to avoid index shift)
+    for ($i = $colCount; $i -ge 1; $i--) {
+        $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
+        if (-not ($desiredOrder -contains $header)) {
+            try {
+                $sheet.Columns($i).Delete()
+            } catch {
+                Write-Host "⚠️ Could not delete column $i ($header): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # Refresh UsedRange after deletions
+    $usedRange = $sheet.UsedRange
+    $colCount = $usedRange.Columns.Count
+
+    # Re-map headers after deletion
+    $colMap = @{}
+    for ($i = 1; $i -le $colCount; $i++) {
+        $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
+        if ($desiredOrder -contains $header) {
+            $colMap[$header] = $i
+        }
+    }
+
+    # Reorder the remaining columns into desired sequence
+    Write-Host "Found headers after cleanup:" ($colMap.Keys -join ", ") -ForegroundColor Yellow
+    $orderedIndex = 1
+    foreach ($name in $desiredOrder) {
+        if ($colMap.ContainsKey($name)) {
+            $srcCol = $colMap[$name]
+            try {
+                if ($srcCol -ne $orderedIndex) {
+                    $sheet.Columns($srcCol).Cut()
+                    $sheet.Columns($orderedIndex).Insert()
+                }
+            } catch {
+                Write-Host "⚠️ Could not move column '$name': $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            $orderedIndex++
+        }
+    }
+
+    Write-Host "✅ Reordered and removed unwanted columns." -ForegroundColor Green
+
+
+
+
+
+
+
+
+
+
+
+
 # --- ProcessExcel.ps1 ---
 # Finds newest Excel/CSV file in Downloads, copies it to \Bob with same name (_copy#),
 # reorders columns by header, applies formula in column E, hard-codes values, and exits safely.
