@@ -1,20 +1,23 @@
+
 # --- ProcessExcel.ps1 ---
-# Basic test version - verifies everything runs and Excel automation works
+# PowerShell script: find latest Excel/CSV file, copy, reorder columns, add formula, and save
 
-Write-Host "Starting script..." -ForegroundColor Cyan
+Write-Host "🚀 Starting Excel automation..." -ForegroundColor Cyan
 
-# Source and destination paths
-$sourceDir = "C:\Downloads"
-$destDir   = "C:\Downloads\Bob"
+# Automatically detect the user's Downloads folder
+$Downloads = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
+$sourceDir = $Downloads
+$destDir   = Join-Path $Downloads 'Bob'
 
-# Make sure destination folder exists
+# Make sure destination exists
 if (!(Test-Path $destDir)) {
     New-Item -ItemType Directory -Path $destDir | Out-Null
     Write-Host "Created folder: $destDir"
 }
 
-# Get the latest Excel/CSV file
-$file = Get-ChildItem -Path $sourceDir -Include *.csv, *.xlsx -File |
+# Find the newest Excel or CSV file
+$file = Get-ChildItem "$sourceDir\*" -File |
+    Where-Object { $_.Extension -in '.xlsx', '.xls', '.csv' } |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 
@@ -24,38 +27,84 @@ if (-not $file) {
     exit
 }
 
+Write-Host "Found file: $($file.Name)" -ForegroundColor Yellow
+
 # Build new filename with counter
 $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-$ext      = $file.Extension
-$counter  = (Get-ChildItem -Path $destDir -Filter "$baseName*_copy$ext" -ErrorAction SilentlyContinue).Count + 1
-$newFile  = Join-Path $destDir "$($baseName)_copy$counter$ext"
+$ext = $file.Extension
+$counter = (Get-ChildItem -Path $destDir -Filter "$baseName*_copy$ext" -ErrorAction SilentlyContinue).Count + 1
+$newFile = Join-Path $destDir "$($baseName)_copy$counter$ext"
 
-# Copy the file
+# Copy file
 Copy-Item $file.FullName $newFile -Force
 Write-Host "Copied to: $newFile" -ForegroundColor Green
 
-# Start Excel (invisible)
-$excel = New-Object -ComObject Excel.Application
-$excel.Visible = $false
-$excel.DisplayAlerts = $false
-$workbook = $excel.Workbooks.Open($newFile)
-$sheet = $workbook.Sheets.Item(1)
+# Launch Excel COM object
+try {
+    $excel = New-Object -ComObject Excel.Application
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    $workbook = $excel.Workbooks.Open($newFile)
+    $sheet = $workbook.Sheets.Item(1)
 
-# Apply test text in E2
-$sheet.Cells.Item(2,5).Value2 = "✅ PowerShell test successful!"
+    # Reorder columns by header name
+    $desiredOrder = @("dog","cat","bird","age","height")
+    $headerRow = 1
+    $usedRange = $sheet.UsedRange
+    $colCount = $usedRange.Columns.Count
 
-# Save and close
-$workbook.Save()
-$workbook.Close()
-$excel.Quit()
+    # Map headers
+    $colMap = @{}
+    for ($i = 1; $i -le $colCount; $i++) {
+        $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
+        if ($desiredOrder -contains $header) { $colMap[$header] = $i }
+    }
 
-# Release COM objects
-[System.Runtime.Interopservices.Marshal]::ReleaseComObject($sheet) | Out-Null
-[System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
-[System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    # Reorder columns safely
+    for ($i = 0; $i -lt $desiredOrder.Count; $i++) {
+        $colName = $desiredOrder[$i]
+        if ($colMap.ContainsKey($colName)) {
+            $sourceCol = $colMap[$colName]
+            $destCol = $i + 1
+            if ($sourceCol -ne $destCol) {
+                $sheet.Columns($sourceCol).Cut()
+                $sheet.Columns($destCol).Insert()
+            }
+        }
+    }
 
-Write-Host "✅ Done! Check your new file in $destDir" -ForegroundColor Green
-Pause
+    # Determine last used row
+    $lastRow = $sheet.UsedRange.Rows.Count
+
+    # Apply formula in column E (height column)
+    $formula = '="on " & TEXT(A2,"mm/dd/yyyy hh:mm:ss") & " we had " & TEXT(B2+C2,"#.##") & " for attendees"'
+    $sheet.Range("E2:E$lastRow").Formula = $formula
+
+    # Hard-code formulas (convert to values)
+    $sheet.Range("E2:E$lastRow").Value = $sheet.Range("E2:E$lastRow").Value
+
+    # Save and close workbook
+    $workbook.Save()
+    $workbook.Close()
+    $excel.Quit()
+
+    # Release COM objects
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($sheet) | Out-Null
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+
+    Write-Host "✅ Done! Processed and saved as $newFile" -ForegroundColor Green
+}
+catch {
+    Write-Host "⚠️ Error: $($_.Exception.Message)" -ForegroundColor Red
+}
+finally {
+    Pause
+}
+
+
+
+
 
 
 
