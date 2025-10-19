@@ -1,3 +1,66 @@
+# --- ProcessExcel.ps1 ---
+# Basic test version - verifies everything runs and Excel automation works
+
+Write-Host "Starting script..." -ForegroundColor Cyan
+
+# Source and destination paths
+$sourceDir = "C:\Downloads"
+$destDir   = "C:\Downloads\Bob"
+
+# Make sure destination folder exists
+if (!(Test-Path $destDir)) {
+    New-Item -ItemType Directory -Path $destDir | Out-Null
+    Write-Host "Created folder: $destDir"
+}
+
+# Get the latest Excel/CSV file
+$file = Get-ChildItem -Path $sourceDir -Include *.csv, *.xlsx -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+
+if (-not $file) {
+    Write-Host "❌ No Excel or CSV file found in $sourceDir" -ForegroundColor Red
+    Pause
+    exit
+}
+
+# Build new filename with counter
+$baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+$ext      = $file.Extension
+$counter  = (Get-ChildItem -Path $destDir -Filter "$baseName*_copy$ext" -ErrorAction SilentlyContinue).Count + 1
+$newFile  = Join-Path $destDir "$($baseName)_copy$counter$ext"
+
+# Copy the file
+Copy-Item $file.FullName $newFile -Force
+Write-Host "Copied to: $newFile" -ForegroundColor Green
+
+# Start Excel (invisible)
+$excel = New-Object -ComObject Excel.Application
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+$workbook = $excel.Workbooks.Open($newFile)
+$sheet = $workbook.Sheets.Item(1)
+
+# Apply test text in E2
+$sheet.Cells.Item(2,5).Value2 = "✅ PowerShell test successful!"
+
+# Save and close
+$workbook.Save()
+$workbook.Close()
+$excel.Quit()
+
+# Release COM objects
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($sheet) | Out-Null
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+[System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+
+Write-Host "✅ Done! Check your new file in $destDir" -ForegroundColor Green
+Pause
+
+
+
+
+
 import os
 import sys
 import time
@@ -9,7 +72,11 @@ from PIL import Image
 import mss
 
 # --- Make the process DPI aware so window coords match screen pixels (Windows) ---
-if sys.platform.startswith("win"):
+if sys.pla
+
+
+
+tform.startswith("win"):
     try:
         import ctypes
         ctypes.windll.user32.SetProcessDPIAware()
