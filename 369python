@@ -1,6 +1,7 @@
 
 # --- ProcessExcel.ps1 ---
-# PowerShell script: find latest Excel/CSV file, copy, reorder columns, add formula, and save
+# Finds newest Excel/CSV file in Downloads, copies it as "New File - mm-dd-yyyy (...)", 
+# reorders columns, applies formula, converts to values, and saves cleanly.
 
 Write-Host "🚀 Starting Excel automation..." -ForegroundColor Cyan
 
@@ -9,13 +10,13 @@ $Downloads = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
 $sourceDir = $Downloads
 $destDir   = Join-Path $Downloads 'Bob'
 
-# Make sure destination exists
+# Ensure destination folder exists
 if (!(Test-Path $destDir)) {
     New-Item -ItemType Directory -Path $destDir | Out-Null
     Write-Host "Created folder: $destDir"
 }
 
-# Find the newest Excel or CSV file
+# Find newest Excel/CSV file
 $file = Get-ChildItem "$sourceDir\*" -File |
     Where-Object { $_.Extension -in '.xlsx', '.xls', '.csv' } |
     Sort-Object LastWriteTime -Descending |
@@ -29,69 +30,80 @@ if (-not $file) {
 
 Write-Host "Found file: $($file.Name)" -ForegroundColor Yellow
 
-# Build new filename with counter
-$baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-$ext = $file.Extension
-$counter = (Get-ChildItem -Path $destDir -Filter "$baseName*_copy$ext" -ErrorAction SilentlyContinue).Count + 1
-$newFile = Join-Path $destDir "$($baseName)_copy$counter$ext"
+# --- Build new name pattern: "New File - mm-dd-yyyy" with incremental counter ---
+$today = Get-Date -Format "MM-dd-yyyy"
+$baseName = "New File - $today"
+$ext = ".xlsx"  # Always save as Excel workbook
 
-# Copy file
+# Determine next available filename (stacking allowed)
+$counter = 0
+$newFile = Join-Path $destDir "$baseName$ext"
+while (Test-Path $newFile) {
+    $counter++
+    $newFile = Join-Path $destDir "$baseName ($counter)$ext"
+}
+
+# Copy original file to new name
 Copy-Item $file.FullName $newFile -Force
-Write-Host "Copied to: $newFile" -ForegroundColor Green
+Write-Host "Copied and renamed to: $newFile" -ForegroundColor Green
 
-# Launch Excel COM object
 try {
+    # Start Excel
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
+    $excel.AskToUpdateLinks = $false
     $workbook = $excel.Workbooks.Open($newFile)
     $sheet = $workbook.Sheets.Item(1)
 
-    # Reorder columns by header name
+    # --- Reorder columns by header name ---
     $desiredOrder = @("dog","cat","bird","age","height")
     $headerRow = 1
     $usedRange = $sheet.UsedRange
     $colCount = $usedRange.Columns.Count
 
-    # Map headers
     $colMap = @{}
     for ($i = 1; $i -le $colCount; $i++) {
         $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
-        if ($desiredOrder -contains $header) { $colMap[$header] = $i }
-    }
-
-    # Reorder columns safely
-    for ($i = 0; $i -lt $desiredOrder.Count; $i++) {
-        $colName = $desiredOrder[$i]
-        if ($colMap.ContainsKey($colName)) {
-            $sourceCol = $colMap[$colName]
-            $destCol = $i + 1
-            if ($sourceCol -ne $destCol) {
-                $sheet.Columns($sourceCol).Cut()
-                $sheet.Columns($destCol).Insert()
-            }
+        if ($desiredOrder -contains $header) {
+            $colMap[$header] = $i
         }
     }
 
-    # Determine last used row
+    Write-Host "Found headers:" ($colMap.Keys -join ", ") -ForegroundColor Yellow
+
+    $orderedIndex = 1
+    foreach ($name in $desiredOrder) {
+        if ($colMap.ContainsKey($name)) {
+            $srcCol = $colMap[$name]
+            if ($srcCol -ne $orderedIndex) {
+                $sheet.Columns($srcCol).Cut()
+                $sheet.Columns($orderedIndex).Insert()
+            }
+            $orderedIndex++
+        }
+    }
+
+    # --- Apply formula then hard-code values ---
     $lastRow = $sheet.UsedRange.Rows.Count
+    if ($lastRow -lt 2) {
+        Write-Host "⚠️ Not enough data rows to apply formula." -ForegroundColor Yellow
+    } else {
+        $range = $sheet.Range("E2:E$lastRow")
+        $formula = '= "on " & TEXT(RC[-4], "mm/dd/yyyy hh:mm:ss") & " we had " & TEXT(RC[-3]+RC[-2], "#.##") & " for attendees"'
+        $range.FormulaR1C1 = $formula
+        $range.Value2 = $range.Value2  # hard-code results
+    }
 
-    # Apply formula in column E (height column)
-    $formula = '="on " & TEXT(A2,"mm/dd/yyyy hh:mm:ss") & " we had " & TEXT(B2+C2,"#.##") & " for attendees"'
-    $sheet.Range("E2:E$lastRow").Formula = $formula
-
-    # Hard-code formulas (convert to values)
-    $sheet.Range("E2:E$lastRow").Value = $sheet.Range("E2:E$lastRow").Value
-
-    # Save and close workbook
+    # Save after all processing
     $workbook.Save()
     $workbook.Close()
     $excel.Quit()
 
     # Release COM objects
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($sheet) | Out-Null
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
-    [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
 
     Write-Host "✅ Done! Processed and saved as $newFile" -ForegroundColor Green
 }
@@ -101,6 +113,12 @@ catch {
 finally {
     Pause
 }
+
+
+
+
+
+
 
 
 
