@@ -1,22 +1,21 @@
-
 # --- ProcessExcel.ps1 ---
-# Finds newest Excel/CSV file in Downloads, copies it as "New File - mm-dd-yyyy (...)", 
-# reorders columns, applies formula, converts to values, and saves cleanly.
+# Finds newest Excel/CSV file in Downloads, copies it to \Bob with same name (_copy#),
+# reorders columns by header, applies formula in column E, hard-codes values, and exits safely.
 
 Write-Host "🚀 Starting Excel automation..." -ForegroundColor Cyan
 
-# Automatically detect the user's Downloads folder
+# --- Folder setup ---
 $Downloads = [Environment]::GetFolderPath('UserProfile') + '\Downloads'
 $sourceDir = $Downloads
 $destDir   = Join-Path $Downloads 'Bob'
 
-# Ensure destination folder exists
+# Ensure destination exists
 if (!(Test-Path $destDir)) {
     New-Item -ItemType Directory -Path $destDir | Out-Null
     Write-Host "Created folder: $destDir"
 }
 
-# Find newest Excel/CSV file
+# --- Find newest Excel or CSV file ---
 $file = Get-ChildItem "$sourceDir\*" -File |
     Where-Object { $_.Extension -in '.xlsx', '.xls', '.csv' } |
     Sort-Object LastWriteTime -Descending |
@@ -30,29 +29,27 @@ if (-not $file) {
 
 Write-Host "Found file: $($file.Name)" -ForegroundColor Yellow
 
-# --- Build new name pattern: "New File - mm-dd-yyyy" with incremental counter ---
-$today = Get-Date -Format "MM-dd-yyyy"
-$baseName = "New File - $today"
-$ext = ".xlsx"  # Always save as Excel workbook
+# --- Build copy name in Bob folder ---
+$baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+$ext = $file.Extension
+$counter = (Get-ChildItem -Path $destDir -Filter "$baseName*_copy$ext" -ErrorAction SilentlyContinue).Count + 1
+$newFile = Join-Path $destDir "$($baseName)_copy$counter$ext"
 
-# Determine next available filename (stacking allowed)
-$counter = 0
-$newFile = Join-Path $destDir "$baseName$ext"
-while (Test-Path $newFile) {
-    $counter++
-    $newFile = Join-Path $destDir "$baseName ($counter)$ext"
-}
-
-# Copy original file to new name
+# --- Copy file ---
 Copy-Item $file.FullName $newFile -Force
-Write-Host "Copied and renamed to: $newFile" -ForegroundColor Green
+Write-Host "Copied to: $newFile" -ForegroundColor Green
+
+# --- Excel automation ---
+$excel = $null
+$workbook = $null
+$sheet = $null
 
 try {
-    # Start Excel
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
     $excel.AskToUpdateLinks = $false
+
     $workbook = $excel.Workbooks.Open($newFile)
     $sheet = $workbook.Sheets.Item(1)
 
@@ -62,6 +59,10 @@ try {
     $usedRange = $sheet.UsedRange
     $colCount = $usedRange.Columns.Count
 
+    if ($colCount -eq 0) {
+        throw "No data detected in the worksheet."
+    }
+
     $colMap = @{}
     for ($i = 1; $i -le $colCount; $i++) {
         $header = ($sheet.Cells.Item($headerRow, $i).Text).Trim().ToLower()
@@ -70,47 +71,60 @@ try {
         }
     }
 
-    Write-Host "Found headers:" ($colMap.Keys -join ", ") -ForegroundColor Yellow
-
-    $orderedIndex = 1
-    foreach ($name in $desiredOrder) {
-        if ($colMap.ContainsKey($name)) {
-            $srcCol = $colMap[$name]
-            if ($srcCol -ne $orderedIndex) {
-                $sheet.Columns($srcCol).Cut()
-                $sheet.Columns($orderedIndex).Insert()
+    if ($colMap.Count -eq 0) {
+        Write-Host "⚠️ No matching headers found. Skipping reorder." -ForegroundColor Yellow
+    } else {
+        Write-Host "Found headers:" ($colMap.Keys -join ", ") -ForegroundColor Yellow
+        $orderedIndex = 1
+        foreach ($name in $desiredOrder) {
+            if ($colMap.ContainsKey($name)) {
+                $srcCol = $colMap[$name]
+                try {
+                    if ($srcCol -ne $orderedIndex) {
+                        $sheet.Columns($srcCol).Copy()
+                        $sheet.Columns($orderedIndex).Insert()
+                    }
+                } catch {
+                    Write-Host "⚠️ Could not move column '$name': $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+                $orderedIndex++
             }
-            $orderedIndex++
         }
     }
 
-    # --- Apply formula then hard-code values ---
+    # --- Apply formula ---
     $lastRow = $sheet.UsedRange.Rows.Count
-    if ($lastRow -lt 2) {
-        Write-Host "⚠️ Not enough data rows to apply formula." -ForegroundColor Yellow
-    } else {
+    if ($lastRow -ge 2) {
         $range = $sheet.Range("E2:E$lastRow")
         $formula = '= "on " & TEXT(RC[-4], "mm/dd/yyyy hh:mm:ss") & " we had " & TEXT(RC[-3]+RC[-2], "#.##") & " for attendees"'
-        $range.FormulaR1C1 = $formula
-        $range.Value2 = $range.Value2  # hard-code results
+        try {
+            $range.FormulaR1C1 = $formula
+            $range.Value2 = $range.Value2  # convert to values
+            Write-Host "✅ Formula applied and hard-coded in column E." -ForegroundColor Green
+        } catch {
+            Write-Host "⚠️ Formula failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "⚠️ Not enough data rows to apply formula." -ForegroundColor Yellow
     }
 
-    # Save after all processing
+    # --- Save workbook ---
     $workbook.Save()
-    $workbook.Close()
-    $excel.Quit()
-
-    # Release COM objects
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
-
-    Write-Host "✅ Done! Processed and saved as $newFile" -ForegroundColor Green
+    Write-Host "✅ File processed successfully." -ForegroundColor Green
 }
 catch {
-    Write-Host "⚠️ Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
 }
 finally {
+    # --- Cleanup Excel properly ---
+    if ($workbook) { $workbook.Close($false) | Out-Null }
+    if ($excel) {
+        $excel.Quit()
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
+    }
+    Write-Host "🧹 Excel closed and memory released." -ForegroundColor DarkGray
     Pause
 }
 
