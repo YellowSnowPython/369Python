@@ -1,82 +1,316 @@
 
+import os
+import json
+import time
+import tkinter as tk
+from tkinter import ttk, messagebox
 import pyautogui
 import pandas as pd
-import tkinter as tk
-from tkinter import ttk
-import json, os, time
 
-# === CONFIG ===
-POINT_FILE = "points.json"
-CSV_PATH = r"C:\Downloads\data.csv"
-CLICK_DELAY = 0.05
-POINT_TYPES = ["Name", "Email", "Address", "Phone", "Submit"]
+# ========================
+# USER SETTINGS
+# ========================
+CSV_PATH = r"C:\Downloads\data.csv"     # Your CSV location
+POINT_FILE = "points.json"              # Where profiles/points & UI state are saved
+CLICK_DELAY = 0.05                      # Delay between clicks/typing (seconds)
 
-points = {}
+# 5 profiles you can toggle between
+PROFILES = ["Mode1", "Mode2", "Mode3", "Mode4", "Mode5"]
 
-# === Load saved points if available ===
-if os.path.exists(POINT_FILE):
-    with open(POINT_FILE, "r") as f:
-        points = json.load(f)
+# 5 point types per profile (rename as you like)
+POINT_TYPES = ["Field1", "Field2", "Field3", "Field4", "Submit"]
+# Everything except "Submit" is considered a typing field
 
-# === Overlay UI ===
+# ========================
+# PERSISTENCE STRUCTURE
+# ========================
+# points_state example:
+# {
+#   "profiles": {
+#       "Mode1": {"Field1":[x,y], "Field2":[x,y], "Submit":[x,y]},
+#       "Mode2": {...}
+#   },
+#   "ui": {"x":100, "y":100, "width":320, "height":240, "folded":false, "active_profile":"Mode1"}
+# }
+
+def load_state():
+    if os.path.exists(POINT_FILE):
+        try:
+            with open(POINT_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # default state
+    return {
+        "profiles": {p: {} for p in PROFILES},
+        "ui": {"x": 100, "y": 100, "width": 320, "height": 260, "folded": False, "active_profile": PROFILES[0]}
+    }
+
+def save_state(state):
+    with open(POINT_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+
+state = load_state()
+
+# Ensure all profiles exist
+for p in PROFILES:
+    state["profiles"].setdefault(p, {})
+
+# ========================
+# TK OVERLAY
+# ========================
 root = tk.Tk()
-root.title("Click Mapper")
-root.attributes("-fullscreen", True)
-root.attributes("-alpha", 0.3)
-root.configure(bg="gray")
+root.title("Clickable Overlay – Profiles & Points")
 root.attributes("-topmost", True)
+root.configure(bg="#2b2b2b")
 
-tk.Label(root, text="Click to record points.\nPress ESC to quit.",
-         font=("Arial", 16), bg="gray", fg="white").pack(pady=20)
+# initial geometry
+ui = state.get("ui", {})
+win_w = ui.get("width", 320)
+win_h = ui.get("height", 260)
+win_x = ui.get("x", 100)
+win_y = ui.get("y", 100)
+folded = ui.get("folded", False)
+active_profile = ui.get("active_profile", PROFILES[0]) if ui.get("active_profile") in PROFILES else PROFILES[0]
 
-# Dropdown to select point type
-selected_type = tk.StringVar(value=POINT_TYPES[0])
-dropdown = ttk.Combobox(root, values=POINT_TYPES, textvariable=selected_type, state="readonly", width=20)
-dropdown.pack(pady=10)
+root.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+root.wm_attributes("-alpha", 0.7)  # semi-transparent overlay
 
-# Status label
-status_label = tk.Label(root, text="", font=("Arial", 14), bg="gray", fg="white")
-status_label.pack(pady=10)
+# drag-to-move (use title bar region to drag)
+drag_off_x = drag_off_y = 0
+def start_move(event):
+    global drag_off_x, drag_off_y
+    drag_off_x = event.x
+    drag_off_y = event.y
 
-def record_click(event):
-    ptype = selected_type.get()
-    coords = (event.x_root, event.y_root)
-    points[ptype] = coords
-    status_label.config(text=f"{ptype} set at {coords}")
-    print(f"{ptype} = {coords}")
+def do_move(event):
+    x = root.winfo_x() + (event.x - drag_off_x)
+    y = root.winfo_y() + (event.y - drag_off_y)
+    root.geometry(f"+{x}+{y}")
+    # save position live
+    state["ui"]["x"] = x
+    state["ui"]["y"] = y
+    save_state(state)
 
-def save_and_exit(event=None):
-    with open(POINT_FILE, "w") as f:
-        json.dump(points, f, indent=2)
-    print("Points saved:", points)
+# Title bar
+title_bar = tk.Frame(root, bg="#1e1e1e", height=34)
+title_bar.pack(fill="x")
+title_bar.bind("<Button-1>", start_move)
+title_bar.bind("<B1-Motion>", do_move)
+
+title_lbl = tk.Label(title_bar, text="🖱 Overlay Mapper", fg="white", bg="#1e1e1e", font=("Segoe UI", 11, "bold"))
+title_lbl.pack(side="left", padx=8)
+title_lbl.bind("<Button-1>", start_move)
+title_lbl.bind("<B1-Motion>", do_move)
+
+# Fold / Unfold button
+def set_folded(fold: bool):
+    global folded
+    folded = fold
+    if folded:
+        content_frame.forget()
+        fold_btn.config(text="▲ Unfold")
+        root.geometry(f"220x40+{root.winfo_x()}+{root.winfo_y()}")
+    else:
+        fold_btn.config(text="▼ Fold")
+        content_frame.pack(fill="both", expand=True)
+        # restore size
+        root.geometry(f"{state['ui'].get('width', 320)}x{state['ui'].get('height', 260)}+{root.winfo_x()}+{root.winfo_y()}")
+    state["ui"]["folded"] = folded
+    save_state(state)
+
+fold_btn = tk.Button(title_bar, text=("▲ Unfold" if folded else "▼ Fold"), command=lambda: set_folded(not folded),
+                     relief="flat", bg="#3b3b3b", fg="white", cursor="hand2")
+fold_btn.pack(side="right", padx=6, pady=4)
+
+# Close button (Esc also works)
+def on_close():
+    # persist window size if not folded
+    if not folded:
+        state["ui"]["width"] = root.winfo_width()
+        state["ui"]["height"] = root.winfo_height()
+    state["ui"]["x"] = root.winfo_x()
+    state["ui"]["y"] = root.winfo_y()
+    state["ui"]["active_profile"] = profile_var.get()
+    save_state(state)
     root.destroy()
 
-root.bind("<Button-1>", record_click)
-root.bind("<Escape>", save_and_exit)
-root.mainloop()
+close_btn = tk.Button(title_bar, text="✕", command=on_close, relief="flat", bg="#3b3b3b", fg="white", width=3, cursor="hand2")
+close_btn.pack(side="right", pady=4, padx=(0,6))
 
-# === RUN PHASE ===
-print("Loaded points:", points)
-if not points:
-    print("No points defined.")
-    exit()
+# Content area
+content_frame = tk.Frame(root, bg="#2b2b2b")
+if not folded:
+    content_frame.pack(fill="both", expand=True)
 
-# === Load CSV ===
-df = pd.read_csv(CSV_PATH)
+# Row 1: Profile + Point Type
+row1 = tk.Frame(content_frame, bg="#2b2b2b")
+row1.pack(fill="x", padx=10, pady=(10, 6))
 
-print("Automation starting in 3 seconds...")
-time.sleep(3)
+tk.Label(row1, text="Profile:", bg="#2b2b2b", fg="white").pack(side="left")
+profile_var = tk.StringVar(value=active_profile)
+profile_box = ttk.Combobox(row1, values=PROFILES, textvariable=profile_var, state="readonly", width=10)
+profile_box.pack(side="left", padx=(6, 12))
 
-for i, row in df.iterrows():
-    # Example: You can use each field type dynamically
-    for key in POINT_TYPES:
-        if key in points and key in row:
-            x, y = points[key]
-            pyautogui.click(x, y)
-            pyautogui.typewrite(str(row[key]))
+tk.Label(row1, text="Point Type:", bg="#2b2b2b", fg="white").pack(side="left")
+ptype_var = tk.StringVar(value=POINT_TYPES[0])
+ptype_box = ttk.Combobox(row1, values=POINT_TYPES, textvariable=ptype_var, state="readonly", width=12)
+ptype_box.pack(side="left", padx=6)
+
+# Row 2: Buttons
+row2 = tk.Frame(content_frame, bg="#2b2b2b")
+row2.pack(fill="x", padx=10, pady=6)
+
+status_lbl = tk.Label(content_frame, text="Ready. Record points, then Run Automation.",
+                      bg="#2b2b2b", fg="#e8e8e8", anchor="w", justify="left")
+status_lbl.pack(fill="x", padx=10)
+
+def save_points_only():
+    save_state(state)
+    status_lbl.config(text="Saved points ✓")
+
+def record_point():
+    """Hide overlay briefly; capture current mouse position as the chosen point type for the selected profile."""
+    # persist ui before hiding
+    state["ui"]["x"] = root.winfo_x()
+    state["ui"]["y"] = root.winfo_y()
+    if not folded:
+        state["ui"]["width"] = root.winfo_width()
+        state["ui"]["height"] = root.winfo_height()
+    state["ui"]["active_profile"] = profile_var.get()
+    save_state(state)
+
+    # hide and give user time to place cursor
+    root.withdraw()
+    time.sleep(0.8)  # quick pause; move mouse to target spot
+    x, y = pyautogui.position()
+    prof = profile_var.get()
+    ptype = ptype_var.get()
+    state["profiles"].setdefault(prof, {})
+    state["profiles"][prof][ptype] = [x, y]
+    save_state(state)
+    root.deiconify()
+    status_lbl.config(text=f"{prof} • {ptype} set at ({x}, {y})")
+
+def clear_profile():
+    prof = profile_var.get()
+    state["profiles"][prof] = {}
+    save_state(state)
+    status_lbl.config(text=f"Cleared all points for {prof}")
+
+def _fields_except_submit():
+    return [t for t in POINT_TYPES if t.lower() != "submit"]
+
+def _profile_points(prof):
+    """Return dict of point type -> (x,y) for current profile (if present)."""
+    data = state["profiles"].get(prof, {})
+    # ensure lists converted to tuples for safety
+    return {k: tuple(v) for k, v in data.items() if isinstance(v, (list, tuple)) and len(v) == 2}
+
+def run_automation():
+    prof = profile_var.get()
+    coords = _profile_points(prof)
+    if not coords:
+        status_lbl.config(text=f"No points defined for {prof} ✖")
+        return
+
+    if not os.path.exists(CSV_PATH):
+        status_lbl.config(text=f"CSV not found at {CSV_PATH} ✖")
+        return
+
+    try:
+        df = pd.read_csv(CSV_PATH)
+    except Exception as e:
+        status_lbl.config(text=f"CSV read error: {e}")
+        return
+
+    # Determine mapping strategy:
+    # 1) If CSV contains columns matching point types (case-insensitive), map by name.
+    # 2) Else, if CSV has exactly 2 columns, use the second column as the value and
+    #    type it into each defined (non-Submit) point in POINT_TYPES order for each row.
+    col_map = {}
+    lower_cols = {c.lower(): c for c in df.columns}
+    named_match = False
+    for pt in POINT_TYPES:
+        if pt.lower() in lower_cols:
+            col_map[pt] = lower_cols[pt.lower()]
+            named_match = True
+
+    use_two_col_fallback = False
+    second_col_name = None
+    if not named_match:
+        if len(df.columns) == 2:
+            second_col_name = df.columns[1]
+            use_two_col_fallback = True
+        else:
+            status_lbl.config(text="CSV columns don't match point types and aren't A/B style.")
+            return
+
+    status_lbl.config(text="Automation begins in 3 seconds... Focus your target window.")
+    root.update()
+    time.sleep(3)
+
+    fields_for_typing = [pt for pt in POINT_TYPES if pt.lower() != "submit"]
+    submit_xy = coords.get("Submit") or coords.get("submit")
+
+    rows_done = 0
+    for _, row in df.iterrows():
+        if named_match:
+            # Map by matching column names
+            for pt in fields_for_typing:
+                if pt in coords and pt in col_map:
+                    x, y = coords[pt]
+                    val = "" if pd.isna(row[col_map[pt]]) else str(row[col_map[pt]])
+                    pyautogui.click(x, y)
+                    time.sleep(CLICK_DELAY)
+                    if val:
+                        pyautogui.typewrite(val)
+                        time.sleep(CLICK_DELAY)
+        elif use_two_col_fallback:
+            # A/B style: second column into all defined fields (in order)
+            value = "" if pd.isna(row[second_col_name]) else str(row[second_col_name])
+            for pt in fields_for_typing:
+                if pt in coords:
+                    x, y = coords[pt]
+                    pyautogui.click(x, y)
+                    time.sleep(CLICK_DELAY)
+                    if value:
+                        pyautogui.typewrite(value)
+                        time.sleep(CLICK_DELAY)
+
+        # Optional submit after each row
+        if submit_xy:
+            pyautogui.click(*submit_xy)
             time.sleep(CLICK_DELAY)
 
-    # Click submit at the end of each row if configured
-    if "Submit" in points:
-        pyautogui.click(*points["Submit"])
-        time.sleep(CLICK_DELAY)
+        rows_done += 1
+
+    status_lbl.config(text=f"Automation complete ✓  ({rows_done} rows)")
+
+btn_record = tk.Button(row2, text="📍 Record Point", command=record_point, bg="#4a4a4a", fg="white")
+btn_record.pack(side="left", padx=(0,6))
+
+btn_save = tk.Button(row2, text="💾 Save", command=save_points_only, bg="#4a4a4a", fg="white")
+btn_save.pack(side="left", padx=6)
+
+btn_clear = tk.Button(row2, text="🧹 Clear Profile", command=clear_profile, bg="#803d3d", fg="white")
+btn_clear.pack(side="left", padx=6)
+
+btn_run = tk.Button(row2, text="▶ Run Automation", command=run_automation, bg="#2e7d32", fg="white")
+btn_run.pack(side="right", padx=(6,0))
+
+# Resize handling (remember size when unfolding)
+def on_configure(event):
+    if not folded and (event.widget is root):
+        state["ui"]["width"] = root.winfo_width()
+        state["ui"]["height"] = root.winfo_height()
+        save_state(state)
+
+root.bind("<Configure>", on_configure)
+root.bind("<Escape>", lambda e: on_close())
+
+# If initial state is folded, apply it after widgets exist
+if folded:
+    set_folded(True)
+
+root.mainloop()
