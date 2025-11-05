@@ -1,0 +1,189 @@
+
+<# TURBO PowerShell — minimizes COM round-trips and disables Excel overhead during work #>
+
+# -------------------- USER SETTINGS --------------------
+$SourceDir = 'C:\Downloads'
+$TargetDir = 'C:\Downloads'
+
+$SourceWbNamePattern = 'bestx.*tkg.*cross.*asset.*sales.*analysis'  # regex, case-insensitive
+$TargetWbNamePattern = 'bbg.*pricing.*extract.*2025'
+
+$SourceWsNamePattern = 'bestx.*cas'
+$TargetWsNamePattern = 'sov.*dbt.*prices'
+
+$FilterValue = 'Agencies'  # match in column G (source)
+$PasteColumnLetter  = 'L'  # target paste column
+
+$To      = ''              # e.g. 'desk@firm.com'
+$Cc      = ''
+$Subject = 'SOVDBT Prices (versioned extract)'
+$Body    = 'Attached is the updated BBG Pricing Extract with Agencies CUSIPs populated in column L.'
+$AutoSend = $false
+# ------------------------------------------------------
+
+# Excel constants
+$xlUp = -4162
+
+function Get-ExcelApp {
+    try   { [Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application') }
+    catch { New-Object -ComObject Excel.Application }
+}
+
+function Get-OpenWorkbookByPattern([object]$Excel,[string]$NameRegex){
+    foreach ($wb in @($Excel.Workbooks)) { if ($wb.Name -match $NameRegex) { return $wb } }
+    $null
+}
+
+function Get-FileByPattern([string]$Dir,[string]$NameRegex){
+    if (-not (Test-Path $Dir)) { return $null }
+    Get-ChildItem -Path $Dir -File -Filter '*.xls*' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match $NameRegex } |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+}
+
+function Get-WorksheetByPattern([object]$Workbook,[string]$SheetRegex){
+    foreach ($ws in @($Workbook.Worksheets)) { if ($ws.Name -match $SheetRegex) { return $ws } }
+    $null
+}
+
+function Get-LastRow([object]$Worksheet,[string]$ColLetter){
+    $Worksheet.Cells.Item($Worksheet.Rows.Count, $ColLetter).End($xlUp).Row
+}
+
+function Release-Com([object]$o){ if ($null -ne $o) { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($o) } }
+
+$excel = $null
+$createdExcel = $false
+$prev = @{}
+
+try {
+    # Attach or create Excel
+    $excel = Get-ExcelApp
+    try { [void][Runtime.InteropServices.Marshal]::GetActiveObject('Excel.Application'); $createdExcel = $false } catch { $createdExcel = $true }
+    $excel.Visible = $false
+
+    # ====== Disable overhead (fast mode) ======
+    $prev.ScreenUpdating = $excel.ScreenUpdating
+    $prev.EnableEvents   = $excel.EnableEvents
+    $prev.DisplayAlerts  = $excel.DisplayAlerts
+    $prev.Calculation    = $excel.Calculation
+
+    $excel.ScreenUpdating = $false
+    $excel.EnableEvents   = $false
+    $excel.DisplayAlerts  = $false
+    # xlCalculationManual = -4135
+    $excel.Calculation    = -4135
+
+    # ====== SOURCE workbook ======
+    $srcWb = Get-OpenWorkbookByPattern -Excel $excel -NameRegex $SourceWbNamePattern
+    if (-not $srcWb) {
+        $srcFile = Get-FileByPattern -Dir $SourceDir -NameRegex $SourceWbNamePattern
+        if (-not $srcFile) { throw "Source workbook not found (pattern: $SourceWbNamePattern) in $SourceDir or in open workbooks." }
+        $srcWb = $excel.Workbooks.Open($srcFile.FullName)
+    }
+
+    $srcWs = Get-WorksheetByPattern -Workbook $srcWb -SheetRegex $SourceWsNamePattern
+    if (-not $srcWs) { throw "Source worksheet not found (pattern: $SourceWsNamePattern) in '$($srcWb.Name)'." }
+
+    # Determine usable row count (max of G/H, but we’ll read by UsedRange for speed)
+    $used = $srcWs.UsedRange
+    $usedRows = $used.Rows.Count
+    if ($usedRows -lt 2) { throw "No data rows detected in source sheet '$($srcWs.Name)'." }
+
+    # ====== Read columns G and H in ONE shot (array-based filtering; no AutoFilter COM) ======
+    $rngG = $srcWs.Range("G2","G$usedRows")
+    $rngH = $srcWs.Range("H2","H$usedRows")
+    $valsG = $rngG.Value2
+    $valsH = $rngH.Value2
+
+    # Normalize to 2D arrays (Excel returns a scalar if single cell)
+    if ($valsG -isnot [object[,]]) { $tmp = New-Object object[,](1,1); $tmp[0,0]=$valsG; $valsG=$tmp }
+    if ($valsH -isnot [object[,]}) { $tmp = New-Object object[,](1,1); $tmp[0,0]=$valsH; $valsH=$tmp }
+
+    $rows = [Math]::Max($valsG.GetLength(0), $valsH.GetLength(0))
+    $cusips = New-Object System.Collections.Generic.List[object]
+    for ($i=0; $i -lt $rows; $i++) {
+        $g = $valsG[$i,0]
+        if ($null -ne $g -and [string]$g -eq $FilterValue) {
+            $cusips.Add($valsH[$i,0])
+        }
+    }
+    if ($cusips.Count -eq 0) { throw "No rows where Column G == '$FilterValue'." }
+
+    # ====== TARGET workbook ======
+    $tgtWb = Get-OpenWorkbookByPattern -Excel $excel -NameRegex $TargetWbNamePattern
+    $openedTargetFromDisk = $false
+    if (-not $tgtWb) {
+        $tgtFile = Get-FileByPattern -Dir $TargetDir -NameRegex $TargetWbNamePattern
+        if (-not $tgtFile) { throw "Target workbook not found (pattern: $TargetWbNamePattern) in $TargetDir or in open workbooks." }
+        $tgtWb = $excel.Workbooks.Open($tgtFile.FullName)
+        $openedTargetFromDisk = $true
+    }
+
+    $tgtWs = Get-WorksheetByPattern -Workbook $tgtWb -SheetRegex $TargetWsNamePattern
+    if (-not $tgtWs) { throw "Target worksheet not found (pattern: $TargetWsNamePattern) in '$($tgtWb.Name)'." }
+
+    # ====== Paste to Column L (clear and write once) ======
+    $startRow = 2
+    $endRow   = $startRow + $cusips.Count - 1
+    # Clear existing Column L content (from row 2 down to used bottom)
+    $lastRowL = Get-LastRow -Worksheet $tgtWs -ColumnLetter $PasteColumnLetter
+    if ($lastRowL -lt $startRow) { $lastRowL = $startRow }
+    $tgtWs.Range("$PasteColumnLetter$startRow","$PasteColumnLetter$lastRowL").ClearContents()
+
+    # Build one 2D array and write in one call
+    $data2D = New-Object 'object[,]' $cusips.Count, 1
+    for ($i=0; $i -lt $cusips.Count; $i++) { $data2D[$i,0] = $cusips[$i] }
+    $tgtWs.Range("$PasteColumnLetter$startRow","$PasteColumnLetter$endRow").Value2 = $data2D
+
+    # ====== Save + versioned copy (_v1/_v2/…) ======
+    if ($openedTargetFromDisk -eq $false -and -not $tgtWb.Path) {
+        throw "Target workbook has never been saved; please save it once, then re-run."
+    }
+
+    $baseFull = if ($tgtWb.FullName) { $tgtWb.FullName } else { Join-Path $tgtWb.Path $tgtWb.Name }
+    $dir  = Split-Path $baseFull -Parent
+    $name = Split-Path $baseFull -LeafBase
+    $ext  = Split-Path $baseFull -Leaf | ForEach-Object { $_.Substring($_.LastIndexOf('.')) }
+    $nameCore = ($name -replace '_v\d+$','')
+
+    $n=1
+    do {
+        $newName = "{0}_v{1}{2}" -f $nameCore, $n, $ext
+        $newFull = Join-Path $dir $newName
+        $n++
+    } while (Test-Path $newFull)
+
+    $tgtWb.Save()        # persist changes to the original, too (optional)
+    $tgtWb.SaveCopyAs($newFull)
+
+    # ====== Outlook draft with attachment ======
+    try {
+        $ol = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application')
+    } catch {
+        $ol = New-Object -ComObject Outlook.Application
+    }
+    $mail = $ol.CreateItem(0)
+    if ($To) { $mail.To = $To }
+    if ($Cc) { $mail.CC = $Cc }
+    $mail.Subject = $Subject
+    $mail.Body    = $Body
+    [void]$mail.Attachments.Add($newFull)
+    if ($AutoSend) { $mail.Send() } else { $mail.Display() }
+
+} catch {
+    Write-Error $_.Exception.Message
+    throw
+} finally {
+    # Restore Excel state
+    if ($excel) {
+        if ($prev.ContainsKey('Calculation'))    { $excel.Calculation    = $prev.Calculation }
+        if ($prev.ContainsKey('DisplayAlerts'))  { $excel.DisplayAlerts  = $prev.DisplayAlerts }
+        if ($prev.ContainsKey('EnableEvents'))   { $excel.EnableEvents   = $prev.EnableEvents }
+        if ($prev.ContainsKey('ScreenUpdating')) { $excel.ScreenUpdating = $prev.ScreenUpdating }
+    }
+    # Quit only if we created Excel
+    if ($createdExcel -and $excel) { try { $excel.Quit() } catch {} }
+    Release-Com $excel
+}
