@@ -1,3 +1,105 @@
+Transparent Mode
+
+1️⃣ Make the window semi-transparent (whole window)
+This is the easiest and works well on Windows & macOS.
+Add this right after you create root = tk.Tk() in main():
+Copy code
+Python
+root.attributes("-alpha", 0.9)   # 0.0 = invisible, 1.0 = fully opaque
+Good values to try:
+0.85 → subtle glass feel
+0.9 → readable but light
+0.95 → almost solid
+Example:
+Copy code
+Python
+def main():
+    ensure_dirs()
+    root = tk.Tk()
+    root.attributes("-topmost", True)
+    root.attributes("-alpha", 0.9)
+    LinkDockApp(root)
+    root.mainloop()
+⚠️ Important: Transparency affects everything (text too). There’s no per-widget alpha in Tkinter.
+2️⃣ Change background color (dark / glass style)
+Change main window background
+In __init__ of LinkDockApp, add:
+Copy code
+Python
+self.root.configure(bg="#1e1e1e")  # dark gray
+Update ttk style colors (important)
+Add to _build_style() after creating style:
+Copy code
+Python
+style.configure(".", background="#1e1e1e", foreground="#e6e6e6")
+style.configure("TFrame", background="#1e1e1e")
+style.configure("TLabel", background="#1e1e1e", foreground="#e6e6e6")
+style.configure("TButton", background="#2a2a2a", foreground="#ffffff")
+This prevents “white patches” from ttk defaults.
+3️⃣ “Glass” style (Windows only, optional)
+You can combine transparency + dark background:
+Copy code
+Python
+root.attributes("-alpha", 0.88)
+root.configure(bg="#202020")
+This gives a glass-like floating panel feel.
+4️⃣ True transparency (click-through background) ⚠️ Advanced
+Tkinter supports color-key transparency on Windows only:
+Copy code
+Python
+root.wm_attributes("-transparentcolor", "#ff00ff")
+root.configure(bg="#ff00ff")
+Anything painted that exact color becomes invisible.
+⚠️ Downsides:
+Widgets may flicker
+Not portable
+Harder to theme cleanly
+I don’t recommend this unless you want a very custom HUD-style panel.
+5️⃣ Add a transparency slider (recommended UX)
+Inside LinkDockApp._build_layout() (toolbar section):
+Copy code
+Python
+self.alpha_var = tk.DoubleVar(value=0.9)
+
+alpha_slider = ttk.Scale(
+    top,
+    from_=0.6,
+    to=1.0,
+    variable=self.alpha_var,
+    command=lambda v: self.root.attributes("-alpha", float(v))
+)
+alpha_slider.pack(side=tk.LEFT, padx=8)
+Now you can adjust transparency live.
+6️⃣ Combine everything (best setup)
+Recommended combo for a floating utility panel:
+Copy code
+Python
+root.attributes("-topmost", True)
+root.attributes("-alpha", 0.9)
+root.configure(bg="#1e1e1e")
+Optional Windows polish:
+Copy code
+Python
+root.attributes("-toolwindow", True)
+What Tkinter CANNOT do (important to know)
+❌ Blur background (Acrylic / Mica)
+❌ Per-widget transparency
+❌ True macOS vibrancy
+For those, you’d need:
+PyQt / PySide
+Win32 APIs
+Electron / Tauri
+But for a lightweight floating organizer, Tkinter is still a great choice.
+If you want, next we can:
+save transparency + on-top settings in db.json
+add hide-to-tray behavior
+create a compact “collapsed” mode
+make the window snap to screen edges
+Just tell me 👍
+
+
+Floating Mode
+
 To make the whole Tkinter window float on top of all apps, set the topmost window attribute.
 Add this right after you create the root window (in main()), before mainloop():
 Copy code
