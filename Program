@@ -1,3 +1,43 @@
+To make the whole Tkinter window float on top of all apps, set the topmost window attribute.
+Add this right after you create the root window (in main()), before mainloop():
+Copy code
+Python
+def main():
+    ensure_dirs()
+    root = tk.Tk()
+    root.attributes("-topmost", True)   # 👈 always on top
+    LinkDockApp(root)
+    root.mainloop()
+Optional: add a toggle (so you can turn it off/on)
+Add this method inside LinkDockApp:
+Copy code
+Python
+def toggle_always_on_top(self):
+    current = bool(self.root.attributes("-topmost"))
+    self.root.attributes("-topmost", not current)
+    self.status_var.set(f"Always on top: {not current}")
+Then add a button in your toolbar (in _build_layout() where the other buttons are):
+Copy code
+Python
+ttk.Button(top, text="Always On Top", command=self.toggle_always_on_top).pack(side=tk.LEFT, padx=4)
+Optional: make it behave like a “floating panel”
+If you also want a more widget-like feel:
+remove the maximize button (Windows only):
+Copy code
+Python
+self.root.resizable(True, True)  # keep resize if you want
+self.root.attributes("-toolwindow", True)  # Windows: smaller title bar/tool window style
+(That last one is Windows-specific; if it errors on your setup, remove it.)
+If you tell me whether you want it to start on-top by default or remember the toggle setting, I can show you the small persistence change in db.json.
+
+
+--------
+
+
+
+
+
+
 
 """
 LinkDock (full working) — Tkinter desktop organizer for:
