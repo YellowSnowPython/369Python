@@ -1,0 +1,22 @@
+
+Valuation Flow and Explanation
+Bloomberg Valuation
+Bloomberg provides both NPV without fees and NPV with fees.
+The difference between these two values represents the present value impact of upfront premium and fees.
+For reconciliation purposes, Bloomberg’s NPV without fees is used as the base valuation of future cashflows.
+Transition to Calypso (Trade Face)
+Calypso trade face reports:
+Upfront premium as a separate cashflow
+NPV with fees and NPV without fees
+Bloomberg’s NPV without fees was compared directly to Calypso’s NPV without fees to ensure consistent treatment of future cashflows.
+Minor differences were observed and are attributable to system-specific discounting, curve construction, and settlement timing conventions.
+Internal Calypso Representation
+Internal Calypso reporting separates:
+Forward (upfront) premium
+NPV of future cashflows (without fees)
+The premium is not embedded in NPV, avoiding double counting.
+When combining Internal Calypso NPV and premium, the total economic value reconciles to Calypso trade face and Bloomberg valuations within expected tolerance.
+Results
+After aligning valuation definitions and premium treatment across systems, all valuations reconcile. Residual differences are explained by timing and discounting conventions and do not indicate a valuation or booking error.
+Conclusion
+The valuation logic and premium treatment across Bloomberg, Calypso trade face, and internal Calypso are consistent and appropriate. Differences observed are driven by system presentation and valuation conventions rather than mis-valuation.
