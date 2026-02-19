@@ -2,11 +2,12 @@
 import sys
 import argparse
 from pathlib import Path
-from typing import Iterable, List, Tuple, Optional
+from typing import Iterable, List, Optional
 
 import ctypes
 import win32con
 import win32security
+import win32api
 import pythoncom
 import win32com.client
 
@@ -58,23 +59,34 @@ def lock_down_acl(path: Path) -> None:
     path_str = str(path)
 
     token = win32security.OpenProcessToken(
-        win32security.GetCurrentProcess(),
+        win32api.GetCurrentProcess(),
         win32con.TOKEN_QUERY
     )
+
     user_sid = win32security.GetTokenInformation(
-        token, win32security.TokenUser
+        token,
+        win32security.TokenUser
     )[0]
 
     admin_sid, _, _ = win32security.LookupAccountName(
-        None, r"BUILTIN\Administrators"
+        None,
+        r"BUILTIN\Administrators"
     )
 
     dacl = win32security.ACL()
+
     dacl.AddAccessAllowedAceEx(
-        win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, user_sid
+        win32security.ACL_REVISION,
+        0,
+        win32con.GENERIC_ALL,
+        user_sid
     )
+
     dacl.AddAccessAllowedAceEx(
-        win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, admin_sid
+        win32security.ACL_REVISION,
+        0,
+        win32con.GENERIC_ALL,
+        admin_sid
     )
 
     win32security.SetNamedSecurityInfo(
@@ -85,7 +97,7 @@ def lock_down_acl(path: Path) -> None:
         None,
         None,
         dacl,
-        None,
+        None
     )
 
 
@@ -93,6 +105,7 @@ def lock_down_acl(path: Path) -> None:
 # Excel Password Setter
 # =============================
 def set_excel_password_bulk(files: List[Path], password: str):
+
     pythoncom.CoInitialize()
     excel = win32com.client.Dispatch("Excel.Application")
     excel.Visible = False
@@ -121,6 +134,7 @@ def set_excel_password_bulk(files: List[Path], password: str):
 # Word Password Setter
 # =============================
 def set_word_password_bulk(files: List[Path], password: str):
+
     pythoncom.CoInitialize()
     word = win32com.client.Dispatch("Word.Application")
     word.Visible = False
@@ -154,10 +168,12 @@ def pick_folder(initialdir: str) -> Path:
 
     root = tk.Tk()
     root.withdraw()
+
     folder = filedialog.askdirectory(
         initialdir=initialdir,
         title="Select folder to process"
     )
+
     root.destroy()
 
     if not folder:
@@ -176,13 +192,13 @@ def main():
     )
 
     ap.add_argument("--folder", help="Folder path (skip GUI picker).")
+
     ap.add_argument(
         "--initialdir",
         default="C:/",
         help="Starting location for folder picker."
     )
 
-    # Default password set here
     ap.add_argument(
         "--password",
         default="password1234",
@@ -196,8 +212,8 @@ def main():
     if not root.exists() or not root.is_dir():
         sys.exit(f"Invalid folder: {root}")
 
-    print(f"Processing: {root}")
-    print(f"Using password: {args.password}")
+    print(f"\nProcessing folder: {root}")
+    print(f"Using password: {args.password}\n")
 
     all_files = list(iter_all_files_recursive(root))
 
@@ -206,7 +222,7 @@ def main():
 
     print(f"Total files found: {len(all_files)}")
     print(f"Excel files: {len(excel_files)}")
-    print(f"Word files: {len(word_files)}")
+    print(f"Word files: {len(word_files)}\n")
 
     # 1) Protect Office files
     set_excel_password_bulk(excel_files, args.password)
@@ -214,10 +230,13 @@ def main():
 
     # 2) Apply Read-Only + ACL to ALL files
     for f in all_files:
-        set_readonly_attribute(f)
-        lock_down_acl(f)
+        try:
+            set_readonly_attribute(f)
+            lock_down_acl(f)
+        except Exception as e:
+            print(f"Permission error: {f} -> {e}")
 
-    print("Done.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
