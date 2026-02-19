@@ -1,0 +1,213 @@
+
+param(
+  [Parameter(Mandatory=$false)]
+  [string]$Folder = "",
+
+  [Parameter(Mandatory=$false)]
+  [string]$Password = "password1234",
+
+  [switch]$Recursive = $true,
+
+  # Apply ACL/Readonly to all files, not just Office files
+  [switch]$AllFiles = $true
+)
+
+function Select-FolderDialog([string]$InitialDirectory = "C:\") {
+  Add-Type -AssemblyName System.Windows.Forms | Out-Null
+  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+  $dialog.Description = "Select folder to process"
+  $dialog.SelectedPath = $InitialDirectory
+  if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+    throw "No folder selected."
+  }
+  return $dialog.SelectedPath
+}
+
+if ([string]::IsNullOrWhiteSpace($Folder)) {
+  $Folder = Select-FolderDialog "C:\"
+}
+
+if (-not (Test-Path $Folder)) { throw "Folder not found: $Folder" }
+
+# Extensions
+$excelExts = @(".xlsx",".xlsm",".xlsb",".xls",".xltx",".xltm",".xlt")
+$wordExts  = @(".docx",".docm",".doc",".dotx",".dotm",".dot")
+
+Write-Host "Folder: $Folder"
+Write-Host "Password: $Password"
+Write-Host "Recursive: $Recursive"
+Write-Host "AllFiles for ACL/Readonly: $AllFiles"
+Write-Host ""
+
+# Collect files
+$files = if ($Recursive) {
+  Get-ChildItem -LiteralPath $Folder -File -Recurse -Force -ErrorAction SilentlyContinue
+} else {
+  Get-ChildItem -LiteralPath $Folder -File -Force -ErrorAction SilentlyContinue
+}
+
+$excelFiles = $files | Where-Object { $excelExts -contains $_.Extension.ToLowerInvariant() }
+$wordFiles  = $files | Where-Object { $wordExts  -contains $_.Extension.ToLowerInvariant() }
+
+Write-Host "Total files: $($files.Count)"
+Write-Host "Excel files: $($excelFiles.Count)"
+Write-Host "Word files:  $($wordFiles.Count)"
+Write-Host ""
+
+# -----------------------------
+# 1) Office password step
+# -----------------------------
+function Protect-ExcelFiles($excelFiles, $Password) {
+  if ($excelFiles.Count -eq 0) { return @() }
+
+  $errors = @()
+
+  try {
+    $excel = New-Object -ComObject Excel.Application
+  } catch {
+    throw "Excel COM could not start. $_"
+  }
+
+  foreach ($f in $excelFiles) {
+    $tmp = Join-Path $f.DirectoryName ($f.BaseName + ".__tmp_pw__" + $f.Extension)
+
+    try {
+      # Ensure writable to allow overwrite
+      if ($f.IsReadOnly) { $f.IsReadOnly = $false }
+      if (Test-Path $tmp) { (Get-Item $tmp).IsReadOnly = $false; Remove-Item -LiteralPath $tmp -Force }
+
+      # Open + SaveAs temp with password
+      $wb = $excel.Workbooks.Open($f.FullName)
+      $wb.SaveAs($tmp, $null, $Password) # Password-to-open
+      $wb.Close($false)
+
+      # Replace original
+      Move-Item -LiteralPath $tmp -Destination $f.FullName -Force
+      Write-Host "Excel protected: $($f.FullName)"
+    } catch {
+      $errors += "Excel error: $($f.FullName) -> $($_.Exception.Message)"
+      try { if ($wb) { $wb.Close($false) } } catch {}
+      try { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force } } catch {}
+    }
+  }
+
+  try { $excel.Quit() } catch {}
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+
+  return $errors
+}
+
+function Protect-WordFiles($wordFiles, $Password) {
+  if ($wordFiles.Count -eq 0) { return @() }
+
+  $errors = @()
+
+  try {
+    $word = New-Object -ComObject Word.Application
+  } catch {
+    throw "Word COM could not start. $_"
+  }
+
+  foreach ($f in $wordFiles) {
+    $tmp = Join-Path $f.DirectoryName ($f.BaseName + ".__tmp_pw__" + $f.Extension)
+
+    try {
+      if ($f.IsReadOnly) { $f.IsReadOnly = $false }
+      if (Test-Path $tmp) { (Get-Item $tmp).IsReadOnly = $false; Remove-Item -LiteralPath $tmp -Force }
+
+      $doc = $word.Documents.Open($f.FullName)
+      $doc.SaveAs([ref]$tmp, [ref]$null, [ref]$false, [ref]$Password) # Password-to-open
+      $doc.Close($false)
+
+      Move-Item -LiteralPath $tmp -Destination $f.FullName -Force
+      Write-Host "Word protected: $($f.FullName)"
+    } catch {
+      $errors += "Word error: $($f.FullName) -> $($_.Exception.Message)"
+      try { if ($doc) { $doc.Close($false) } } catch {}
+      try { if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force } } catch {}
+    }
+  }
+
+  try { $word.Quit() } catch {}
+  [System.Runtime.Interopservices.Marshal]::ReleaseComObject($word) | Out-Null
+  [GC]::Collect()
+  [GC]::WaitForPendingFinalizers()
+
+  return $errors
+}
+
+$excelErrors = @()
+$wordErrors = @()
+
+try {
+  $excelErrors = Protect-ExcelFiles $excelFiles $Password
+} catch {
+  Write-Host "Excel password step failed to start: $($_.Exception.Message)" -ForegroundColor Yellow
+  $excelErrors += $_.Exception.Message
+}
+
+try {
+  $wordErrors = Protect-WordFiles $wordFiles $Password
+} catch {
+  Write-Host "Word password step failed to start: $($_.Exception.Message)" -ForegroundColor Yellow
+  $wordErrors += $_.Exception.Message
+}
+
+# -----------------------------
+# 2) Read-only + ACL step
+# -----------------------------
+# Safe ACL: only current user + local Administrators FullControl
+# Remove inheritance to effectively deny everyone else.
+function LockDown-Acl([string]$Path) {
+  $user = "$env:USERDOMAIN\$env:USERNAME"
+  $admins = "BUILTIN\Administrators"
+
+  $acl = Get-Acl -LiteralPath $Path
+
+  # Disable inheritance and remove inherited rules
+  $acl.SetAccessRuleProtection($true, $false)
+
+  # Clear existing rules
+  foreach ($rule in @($acl.Access)) {
+    $acl.RemoveAccessRule($rule) | Out-Null
+  }
+
+  $ruleUser = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $user, "FullControl", "Allow"
+  )
+  $ruleAdmins = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $admins, "FullControl", "Allow"
+  )
+
+  $acl.AddAccessRule($ruleUser)
+  $acl.AddAccessRule($ruleAdmins)
+
+  Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+$targets = if ($AllFiles) { $files } else { ($excelFiles + $wordFiles) }
+
+foreach ($f in $targets) {
+  try {
+    # Set read-only
+    $f.IsReadOnly = $true
+  } catch {
+    Write-Host "Readonly error: $($f.FullName) -> $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+
+  try {
+    LockDown-Acl $f.FullName
+  } catch {
+    Write-Host "ACL error: $($f.FullName) -> $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
+
+Write-Host ""
+Write-Host "Done."
+if ($excelErrors.Count -gt 0 -or $wordErrors.Count -gt 0) {
+  Write-Host "Password errors occurred:" -ForegroundColor Yellow
+  $excelErrors | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+  $wordErrors  | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+}
