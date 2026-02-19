@@ -1,7 +1,8 @@
+
 import sys
 import argparse
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Optional
 
 # Windows-only
 import ctypes
@@ -17,7 +18,7 @@ import win32com.client
 # Target types for Office passwording
 # ----------------------------
 EXCEL_EXTS = {".xlsx", ".xlsm", ".xlsb", ".xls", ".xltx", ".xltm", ".xlt"}
-WORD_EXTS  = {".docx", ".docm", ".doc", ".dotx", ".dotm", ".dot"}
+WORD_EXTS = {".docx", ".docm", ".doc", ".dotx", ".dotm", ".dot"}
 
 
 def iter_all_files_recursive(root: Path) -> Iterable[Path]:
@@ -31,15 +32,17 @@ def iter_all_files_recursive(root: Path) -> Iterable[Path]:
 # ----------------------------
 FILE_ATTRIBUTE_READONLY = 0x00000001
 
-def set_readonly_attribute(path: Path) -> None:
-    GetFileAttributesW = ctypes.windll.kernel32.GetFileAttributesW
-    SetFileAttributesW = ctypes.windll.kernel32.SetFileAttributesW
 
-    attrs = GetFileAttributesW(str(path))
+def set_readonly_attribute(path: Path) -> None:
+    get_attrs = ctypes.windll.kernel32.GetFileAttributesW
+    set_attrs = ctypes.windll.kernel32.SetFileAttributesW
+
+    attrs = get_attrs(str(path))
     if attrs == -1:
         raise OSError(f"GetFileAttributesW failed for {path}")
+
     new_attrs = attrs | FILE_ATTRIBUTE_READONLY
-    if not SetFileAttributesW(str(path), new_attrs):
+    if not set_attrs(str(path), new_attrs):
         raise OSError(f"SetFileAttributesW failed for {path}")
 
 
@@ -47,8 +50,9 @@ def set_readonly_attribute(path: Path) -> None:
 # NTFS permissions (safe lock-down)
 # ----------------------------
 def _lookup_sid(account_name: str) -> pywintypes.SIDType:
-    sid, domain, acct_type = win32security.LookupAccountName(None, account_name)
+    sid, _domain, _acct_type = win32security.LookupAccountName(None, account_name)
     return sid
+
 
 def lock_down_acl(path: Path) -> None:
     """
@@ -59,19 +63,29 @@ def lock_down_acl(path: Path) -> None:
     """
     path_str = str(path)
 
-    token = win32security.OpenProcessToken(win32security.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    token = win32security.OpenProcessToken(
+        win32security.GetCurrentProcess(), win32con.TOKEN_QUERY
+    )
     user_sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
     admin_sid = _lookup_sid(r"BUILTIN\Administrators")
 
     dacl = win32security.ACL()
-    dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, user_sid)
-    dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, admin_sid)
+    dacl.AddAccessAllowedAceEx(
+        win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, user_sid
+    )
+    dacl.AddAccessAllowedAceEx(
+        win32security.ACL_REVISION, 0, win32con.GENERIC_ALL, admin_sid
+    )
 
     win32security.SetNamedSecurityInfo(
         path_str,
         win32security.SE_FILE_OBJECT,
-        win32security.DACL_SECURITY_INFORMATION | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
-        None, None, dacl, None
+        win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        dacl,
+        None,
     )
 
 
@@ -81,16 +95,19 @@ def lock_down_acl(path: Path) -> None:
 def _excel_fileformat_for_ext(ext: str) -> int:
     ext = ext.lower()
     return {
-        ".xlsx": 51,
-        ".xlsm": 52,
-        ".xlsb": 50,
-        ".xls": 56,
-        ".xltx": 54,
-        ".xltm": 53,
-        ".xlt": 17,
+        ".xlsx": 51,   # xlOpenXMLWorkbook
+        ".xlsm": 52,   # xlOpenXMLWorkbookMacroEnabled
+        ".xlsb": 50,   # xlExcel12
+        ".xls": 56,    # xlExcel8
+        ".xltx": 54,   # xlOpenXMLTemplate
+        ".xltm": 53,   # xlOpenXMLTemplateMacroEnabled
+        ".xlt": 17,    # xlTemplate8
     }.get(ext, 51)
 
-def set_excel_password_bulk(files: List[Path], password: str, dry_run: bool=False) -> Tuple[int, List[Tuple[Path, str]]]:
+
+def set_excel_password_bulk(
+    files: List[Path], password: str, dry_run: bool = False
+) -> Tuple[int, List[Tuple[Path, str]]]:
     ok = 0
     errs: List[Tuple[Path, str]] = []
     if not files:
@@ -104,9 +121,11 @@ def set_excel_password_bulk(files: List[Path], password: str, dry_run: bool=Fals
 
     try:
         for f in files:
+            wb: Optional[object] = None
             if dry_run:
                 ok += 1
                 continue
+
             try:
                 ff = _excel_fileformat_for_ext(f.suffix)
                 wb = excel.Workbooks.Open(
@@ -114,18 +133,20 @@ def set_excel_password_bulk(files: List[Path], password: str, dry_run: bool=Fals
                     UpdateLinks=0,
                     ReadOnly=False,
                     IgnoreReadOnlyRecommended=True,
-                    AddToMru=False
+                    AddToMru=False,
                 )
                 wb.SaveAs(str(f), FileFormat=ff, Password=password)
                 wb.Close(SaveChanges=False)
                 ok += 1
+
             except Exception as e:
                 errs.append((f, f"{e.__class__.__name__}: {e}"))
-                try:
-                    # best-effort cleanup
-                    wb.Close(False)  # type: ignore[name-defined]
-                except Exception:
-                    pass
+                if wb is not None:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+
     finally:
         try:
             excel.Quit()
@@ -135,7 +156,10 @@ def set_excel_password_bulk(files: List[Path], password: str, dry_run: bool=Fals
 
     return ok, errs
 
-def set_word_password_bulk(files: List[Path], password: str, dry_run: bool=False) -> Tuple[int, List[Tuple[Path, str]]]:
+
+def set_word_password_bulk(
+    files: List[Path], password: str, dry_run: bool = False
+) -> Tuple[int, List[Tuple[Path, str]]]:
     ok = 0
     errs: List[Tuple[Path, str]] = []
     if not files:
@@ -144,24 +168,33 @@ def set_word_password_bulk(files: List[Path], password: str, dry_run: bool=False
     pythoncom.CoInitialize()
     word = win32com.client.gencache.EnsureDispatch("Word.Application")
     word.Visible = False
-    word.DisplayAlerts = 0
+    word.DisplayAlerts = 0  # wdAlertsNone
 
     try:
         for f in files:
+            doc: Optional[object] = None
             if dry_run:
                 ok += 1
                 continue
+
             try:
-                doc = word.Documents.Open(str(f), ReadOnly=False, AddToRecentFiles=False)
+                doc = word.Documents.Open(
+                    str(f),
+                    ReadOnly=False,
+                    AddToRecentFiles=False,
+                )
                 doc.SaveAs2(str(f), Password=password)
                 doc.Close(False)
                 ok += 1
+
             except Exception as e:
                 errs.append((f, f"{e.__class__.__name__}: {e}"))
-                try:
-                    doc.Close(False)  # type: ignore[name-defined]
-                except Exception:
-                    pass
+                if doc is not None:
+                    try:
+                        doc.Close(False)
+                    except Exception:
+                        pass
+
     finally:
         try:
             word.Quit()
@@ -178,10 +211,14 @@ def set_word_password_bulk(files: List[Path], password: str, dry_run: bool=False
 def pick_folder(initialdir: str) -> Path:
     import tkinter as tk
     from tkinter import filedialog
+
     root = tk.Tk()
     root.withdraw()
-    folder = filedialog.askdirectory(initialdir=initialdir, title="Select folder to process (recursive)")
+    folder = filedialog.askdirectory(
+        initialdir=initialdir, title="Select folder to process (recursive)"
+    )
     root.destroy()
+
     if not folder:
         raise SystemExit("No folder selected.")
     return Path(folder)
@@ -190,20 +227,25 @@ def pick_folder(initialdir: str) -> Path:
 # ----------------------------
 # Main
 # ----------------------------
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Recursively set Office passwords for Word/Excel, mark all files read-only, and lock down NTFS permissions."
+        description=(
+            "Recursively set Office passwords for Word/Excel, mark files read-only, "
+            "and lock down NTFS permissions."
+        )
     )
     ap.add_argument("--initialdir", default=r"C:\", help="Starting location for folder picker.")
     ap.add_argument("--folder", default="", help="Folder path (skip GUI picker).")
     ap.add_argument("--password", required=True, help="Password-to-open for Office files.")
     ap.add_argument("--dry-run", action="store_true", help="No changes; just count what would be done.")
 
-    # Toggles
     ap.add_argument("--no-acl", action="store_true", help="Skip NTFS permission changes.")
     ap.add_argument("--no-readonly", action="store_true", help="Skip read-only attribute changes.")
-    ap.add_argument("--office-only", action="store_true",
-                    help="If set, apply read-only + ACL only to Word/Excel files (not every file).")
+    ap.add_argument(
+        "--office-only",
+        action="store_true",
+        help="If set, apply read-only + ACL only to Word/Excel files (not every file).",
+    )
 
     args = ap.parse_args()
 
@@ -212,9 +254,11 @@ def main():
         raise SystemExit(f"Folder not found or not a directory: {root}")
 
     all_files = list(iter_all_files_recursive(root))
-    office_files = [p for p in all_files if p.suffix.lower() in EXCEL_EXTS or p.suffix.lower() in WORD_EXTS]
+    office_files = [
+        p for p in all_files if p.suffix.lower() in EXCEL_EXTS or p.suffix.lower() in WORD_EXTS
+    ]
     excel_files = [p for p in office_files if p.suffix.lower() in EXCEL_EXTS]
-    word_files  = [p for p in office_files if p.suffix.lower() in WORD_EXTS]
+    word_files = [p for p in office_files if p.suffix.lower() in WORD_EXTS]
 
     perm_targets = office_files if args.office_only else all_files
 
@@ -262,12 +306,16 @@ def main():
                 acl_errs.append((f, f"{e.__class__.__name__}: {e}"))
         print(f"ACL OK: {acl_ok}, errors: {len(acl_errs)}")
 
-    # error report
     total_errs = len(x_errs) + len(w_errs) + len(ro_errs) + len(acl_errs)
     if total_errs:
         print("\nErrors (first 30):")
         shown = 0
-        for label, errs in [("ExcelPassword", x_errs), ("WordPassword", w_errs), ("ReadOnly", ro_errs), ("ACL", acl_errs)]:
+        for label, errs in [
+            ("ExcelPassword", x_errs),
+            ("WordPassword", w_errs),
+            ("ReadOnly", ro_errs),
+            ("ACL", acl_errs),
+        ]:
             for p, msg in errs:
                 print(f"{label}: {p} -> {msg}")
                 shown += 1
