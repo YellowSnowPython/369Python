@@ -25,7 +25,6 @@ def ensure_app_folders():
     for folder in APP_FOLDERS:
         folder.mkdir(parents=True, exist_ok=True)
 
-3.
 
 from datetime import datetime
 from config import AUDITS_FOLDER
