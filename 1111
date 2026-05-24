@@ -19,7 +19,32 @@ APP_FOLDERS = [
 ]
 
 
+
+
+
 def ensure_app_folders():
     for folder in APP_FOLDERS:
         folder.mkdir(parents=True, exist_ok=True)
 
+
+
+from datetime import datetime
+from config import AUDITS_FOLDER
+
+AUDIT_FILE = AUDITS_FOLDER / "audit_log.txt"
+
+
+def log_action(action: str, detail: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    line = f"{timestamp} | {action.upper()} | {detail}\n"
+
+    with open(AUDIT_FILE, "a", encoding="utf-8") as file:
+        file.write(line)
+
+
+def read_audit_log():
+    if not AUDIT_FILE.exists():
+        return ""
+
+    return AUDIT_FILE.read_text(encoding="utf-8")
