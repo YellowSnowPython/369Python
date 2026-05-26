@@ -1,1 +1,394 @@
+"""
+surveillance/groups.py
+
+Groups market abuse patterns by behavioral intent.
+
+This file should NOT contain detection logic.
+It is a registry/config file used by the UI and surveillance engine.
+"""
+
+
+SURVEILLANCE_GROUPS = {
+    "Fake Activity / Fake Liquidity": {
+        "memory_shortcut": "FAKE MARKET SIGNALS",
+        "core_intent": (
+            "Create the illusion that buying, selling, liquidity, demand, "
+            "momentum, or price discovery is genuine."
+        ),
+        "mental_model": "Make the market believe something false.",
+        "patterns": [
+            "Wash Trades",
+            "Painting the Tape",
+            "Spoofing",
+            "Layering",
+            "Quote Stuffing",
+            "Flying",
+            "Printing",
+            "Ping Orders",
+            "Smoking",
+        ],
+        "observable_patterns": [
+            "High cancellations",
+            "Same beneficial ownership",
+            "Opposite-side fills",
+            "Artificial order book pressure",
+            "Rapid order entry and cancellation",
+            "Activity without economic rationale",
+            "Coordinated prints",
+        ],
+        "surveillance_questions": [
+            "Did ownership actually change?",
+            "Were orders intended to execute?",
+            "Was liquidity genuine?",
+            "Was behavior economically rational?",
+            "Was there repeated cancel/re-enter behavior?",
+        ],
+        "recommended_charts": [
+            "Cancel-to-fill ratio by trader",
+            "Order activity over time",
+            "Trade count by counterparty",
+            "Buy/sell imbalance chart",
+            "Trader vs product heatmap",
+        ],
+    },
+
+    "Information Abuse": {
+        "memory_shortcut": "UNFAIR INFORMATION ADVANTAGE",
+        "core_intent": (
+            "Use confidential, material, or non-public information before "
+            "others can react."
+        ),
+        "mental_model": "I know something before everyone else.",
+        "patterns": [
+            "Insider Trading",
+            "Shadow Trading",
+            "Front Running",
+            "RFQ Front Running",
+            "Internal Front Running",
+            "Cross-Product Front Running",
+            "Last Look Abuse",
+            "Cherry Picking",
+        ],
+        "observable_patterns": [
+            "Trading before announcements",
+            "Trading before client orders",
+            "Profits linked to confidential flow",
+            "Suspicious timing",
+            "Access to MNPI",
+            "Repeated directional accuracy",
+        ],
+        "surveillance_questions": [
+            "Who had access to the information?",
+            "Was the information material?",
+            "Was it public?",
+            "Did trading occur unusually early?",
+            "Did the trader benefit from anticipated price movement?",
+        ],
+        "recommended_charts": [
+            "Trade timing vs announcement timeline",
+            "Profit and loss by trader",
+            "Directional accuracy by trader",
+            "Client order vs house order timeline",
+            "Issuer activity before event date",
+        ],
+    },
+
+    "Price Manipulation": {
+        "memory_shortcut": "FORCE PRICE MOVEMENT",
+        "core_intent": (
+            "Artificially move price to benefit a position, exposure, "
+            "benchmark, option, or related instrument."
+        ),
+        "mental_model": "Push the market where I need it.",
+        "patterns": [
+            "Ramping",
+            "Momentum Ignition",
+            "Marking the Close",
+            "Benchmark Manipulation",
+            "Auction Manipulation",
+            "Pump and Dump",
+            "Trash and Cash",
+            "Barrier Manipulation",
+            "Capping",
+            "Pegging",
+            "Floor / Ceiling Strategies",
+        ],
+        "observable_patterns": [
+            "Aggressive buying or selling near benchmarks",
+            "Sudden end-of-day activity",
+            "Price moves disconnected from fundamentals",
+            "Thin liquidity exploitation",
+            "Trading around option barriers",
+            "Coordinated momentum creation",
+        ],
+        "surveillance_questions": [
+            "Why trade aggressively at this time?",
+            "Did the trader benefit from the resulting move?",
+            "Was the move economically rational?",
+            "Was benchmark exposure involved?",
+            "Did activity occur near expiry, auction, or fixing windows?",
+        ],
+        "recommended_charts": [
+            "Price and volume over time",
+            "End-of-day activity chart",
+            "Benchmark window trade activity",
+            "Notional traded near close",
+            "Price move vs trader activity",
+        ],
+    },
+
+    "Concealed Ownership / Exposure": {
+        "memory_shortcut": "HIDE TRUE EXPOSURE",
+        "core_intent": (
+            "Hide true control, ownership, beneficial interest, or risk exposure."
+        ),
+        "mental_model": "Hide who really owns or controls the risk.",
+        "patterns": [
+            "Concealing Ownership",
+            "Parking",
+            "Money Pass",
+            "Compensation Trades",
+        ],
+        "observable_patterns": [
+            "Circular transactions",
+            "Side agreements",
+            "No real transfer of economic risk",
+            "Repeated counterparties",
+            "Beneficial ownership inconsistencies",
+            "Temporary transfers",
+        ],
+        "surveillance_questions": [
+            "Who truly bore the risk?",
+            "Was ownership genuinely transferred?",
+            "Was disclosure avoided?",
+            "Was the trade commercially logical?",
+        ],
+        "recommended_charts": [
+            "Counterparty relationship map",
+            "Circular trade flow chart",
+            "Exposure transfer timeline",
+            "Repeated counterparty heatmap",
+            "Beneficial owner concentration chart",
+        ],
+    },
+
+    "Collusion / Coordination": {
+        "memory_shortcut": "TEAM-BASED MANIPULATION",
+        "core_intent": (
+            "Multiple parties coordinate behavior to manipulate outcomes "
+            "or impair fair competition."
+        ),
+        "mental_model": "Multiple actors working together unfairly.",
+        "patterns": [
+            "Coordinated Trading",
+            "Cartel Behavior",
+            "Bid Rigging",
+            "Market Sharing",
+            "After-Market Collusion",
+            "Inappropriate Market Color Sharing",
+        ],
+        "observable_patterns": [
+            "Coordinated timing",
+            "Repeated counterparties",
+            "Similar trading behavior",
+            "Shared communications",
+            "Artificial pricing consistency",
+            "Suspicious information exchange",
+        ],
+        "surveillance_questions": [
+            "Were parties acting independently?",
+            "Was confidential information shared?",
+            "Was competition impaired?",
+            "Was behavior coordinated?",
+        ],
+        "recommended_charts": [
+            "Trader/counterparty network graph",
+            "Coordinated timing timeline",
+            "Counterparty recurrence heatmap",
+            "Desk-to-desk activity chart",
+            "Similar trade behavior comparison",
+        ],
+    },
+
+    "Market Power Abuse": {
+        "memory_shortcut": "CONTROL THE MARKET SUPPLY",
+        "core_intent": (
+            "Control supply, liquidity, inventory, or market access to pressure "
+            "other participants."
+        ),
+        "mental_model": "Control enough of the market to force others to react.",
+        "patterns": [
+            "Corners",
+            "Squeezes",
+            "Excessive Bid-Offer Spreads",
+        ],
+        "observable_patterns": [
+            "Dominant positions",
+            "Settlement pressure",
+            "Reduced float or liquidity",
+            "Artificial scarcity",
+            "Abnormal spreads",
+            "Forced covering behavior",
+        ],
+        "surveillance_questions": [
+            "Did one participant gain excessive control?",
+            "Was liquidity intentionally restricted?",
+            "Were prices distorted through dominance?",
+        ],
+        "recommended_charts": [
+            "Position concentration chart",
+            "Liquidity over time",
+            "Bid-offer spread trend",
+            "Settlement pressure timeline",
+            "Market share by participant",
+        ],
+    },
+
+    "Order Book Manipulation": {
+        "memory_shortcut": "FAKE ORDER BOOK PRESSURE",
+        "core_intent": (
+            "Manipulate perceptions using orders rather than genuine trading intent."
+        ),
+        "mental_model": "Use the order book as a weapon.",
+        "patterns": [
+            "Spoofing",
+            "Layering",
+            "Cross-Market Spoofing",
+            "Cross-Product Spoofing",
+            "Quote Stuffing",
+            "Phishing",
+            "Ping Orders",
+        ],
+        "observable_patterns": [
+            "Large fake orders",
+            "Fast cancellations",
+            "Opposite-side executions",
+            "Multi-level order placement",
+            "Cross-venue coordination",
+            "Excessive messaging activity",
+        ],
+        "surveillance_questions": [
+            "Were orders bona fide?",
+            "Was execution actually intended?",
+            "Did cancellations correlate with fills?",
+            "Was order activity misleading?",
+        ],
+        "recommended_charts": [
+            "Order book pressure timeline",
+            "Cancel-to-fill ratio",
+            "Order size vs execution chart",
+            "Venue activity comparison",
+            "Messaging activity heatmap",
+        ],
+    },
+}
+
+
+def get_surveillance_groups():
+    """
+    Return the full surveillance grouping dictionary.
+    """
+    return SURVEILLANCE_GROUPS
+
+
+def get_group_names():
+    """
+    Return all group names.
+    """
+    return list(SURVEILLANCE_GROUPS.keys())
+
+
+def get_group_details(group_name: str):
+    """
+    Return metadata for one group.
+    """
+    return SURVEILLANCE_GROUPS.get(group_name)
+
+
+def get_patterns_for_group(group_name: str):
+    """
+    Return all patterns for a selected group.
+    """
+    group = SURVEILLANCE_GROUPS.get(group_name)
+
+    if not group:
+        return []
+
+    return group.get("patterns", [])
+
+
+def get_all_patterns():
+    """
+    Return all patterns as a flat list with group metadata.
+    """
+    all_patterns = []
+
+    for group_name, group_data in SURVEILLANCE_GROUPS.items():
+        for pattern in group_data.get("patterns", []):
+            all_patterns.append({
+                "group": group_name,
+                "pattern": pattern,
+                "memory_shortcut": group_data.get("memory_shortcut"),
+                "core_intent": group_data.get("core_intent"),
+                "mental_model": group_data.get("mental_model"),
+            })
+
+    return all_patterns
+
+
+def search_patterns(search_text: str):
+    """
+    Search groups and patterns by text.
+    """
+    search_text = search_text.lower().strip()
+
+    if not search_text:
+        return get_all_patterns()
+
+    results = []
+
+    for item in get_all_patterns():
+        searchable_text = (
+            item["group"] + " " +
+            item["pattern"] + " " +
+            str(item.get("memory_shortcut", "")) + " " +
+            str(item.get("core_intent", "")) + " " +
+            str(item.get("mental_model", ""))
+        ).lower()
+
+        if search_text in searchable_text:
+            results.append(item)
+
+    return results
+
+
+def count_patterns():
+    """
+    Return total number of pattern entries.
+    Note: Some patterns appear in more than one group,
+    such as Spoofing and Quote Stuffing.
+    """
+    return len(get_all_patterns())
+
+
+def count_unique_patterns():
+    """
+    Return count of unique pattern names across all groups.
+    """
+    unique_patterns = set()
+
+    for item in get_all_patterns():
+        unique_patterns.add(item["pattern"])
+
+    return len(unique_patterns)
+
+
+if __name__ == "__main__":
+    print("Surveillance Groups:")
+    for group_name in get_group_names():
+        print(f"- {group_name}")
+
+    print()
+    print(f"Total pattern entries: {count_patterns()}")
+    print(f"Unique patterns: {count_unique_patterns()}")
 
