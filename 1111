@@ -1,162 +1,161 @@
-"""
-surveillance/registry.py
+import tkinter as tk
+from tkinter import ttk
 
-Central registry for surveillance groups, patterns, metadata,
-and future detector mappings.
-"""
+from surveillance.registry import (
+    get_all_groups,
+    get_group,
+)
 
-from surveillance.groups import SURVEILLANCE_GROUPS
 
-
-def get_all_groups():
+class SurveillancePanel(ttk.Frame):
     """
-    Return the full surveillance group dictionary.
+    Tkinter panel for viewing surveillance groups and abuse patterns.
     """
-    return SURVEILLANCE_GROUPS
 
+    def __init__(self, parent):
+        super().__init__(parent)
 
-def get_group_names():
-    """
-    Return all surveillance group names.
-    """
-    return list(SURVEILLANCE_GROUPS.keys())
+        self.groups = get_all_groups()
 
+        self.build_layout()
+        self.populate_tree()
 
-def get_group(group_name: str):
-    """
-    Return one group by name.
-    """
-    return SURVEILLANCE_GROUPS.get(group_name)
+    def build_layout(self):
+        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=2)
+        self.rowconfigure(0, weight=1)
 
+        left_frame = ttk.Frame(self)
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
 
-def get_patterns_by_group(group_name: str):
-    """
-    Return pattern names for a selected group.
-    """
-    group = get_group(group_name)
+        right_frame = ttk.Frame(self)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
-    if not group:
-        return []
+        ttk.Label(
+            left_frame,
+            text="Market Abuse Groups",
+            font=("Arial", 12, "bold"),
+        ).pack(anchor="w", pady=(0, 5))
 
-    return group.get("patterns", [])
+        self.tree = ttk.Treeview(left_frame)
+        self.tree.pack(fill="both", expand=True)
 
+        self.tree.heading("#0", text="Surveillance Patterns", anchor="w")
 
-def get_all_patterns():
-    """
-    Return all pattern records as a flat list.
-    """
-    patterns = []
+        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
-    for group_name, group_data in SURVEILLANCE_GROUPS.items():
-        for pattern_name in group_data.get("patterns", []):
-            patterns.append({
-                "group": group_name,
-                "pattern": pattern_name,
-                "memory_shortcut": group_data.get("memory_shortcut"),
-                "core_intent": group_data.get("core_intent"),
-                "mental_model": group_data.get("mental_model"),
-                "observable_patterns": group_data.get("observable_patterns", []),
-                "surveillance_questions": group_data.get("surveillance_questions", []),
-                "recommended_charts": group_data.get("recommended_charts", []),
-            })
+        ttk.Label(
+            right_frame,
+            text="Pattern / Group Details",
+            font=("Arial", 12, "bold"),
+        ).pack(anchor="w", pady=(0, 5))
 
-    return patterns
+        self.details_text = tk.Text(
+            right_frame,
+            wrap="word",
+            height=30,
+        )
+        self.details_text.pack(fill="both", expand=True)
 
+    def populate_tree(self):
+        self.tree.delete(*self.tree.get_children())
 
-def get_unique_patterns():
-    """
-    Return unique pattern names across all groups.
-    Some patterns may appear in more than one group.
-    """
-    return sorted({
-        item["pattern"]
-        for item in get_all_patterns()
-    })
+        for group_name, group_data in self.groups.items():
+            group_node = self.tree.insert(
+                "",
+                "end",
+                text=group_name,
+                values=("group",),
+                open=False,
+            )
 
+            for pattern in group_data.get("patterns", []):
+                self.tree.insert(
+                    group_node,
+                    "end",
+                    text=pattern,
+                    values=("pattern", group_name),
+                )
 
-def find_pattern(pattern_name: str):
-    """
-    Find all registry entries for a pattern name.
-    Useful when a pattern appears in multiple groups.
-    """
-    matches = []
+    def on_tree_select(self, event):
+        selected = self.tree.selection()
 
-    for item in get_all_patterns():
-        if item["pattern"].lower() == pattern_name.lower():
-            matches.append(item)
+        if not selected:
+            return
 
-    return matches
+        item_id = selected[0]
+        item_text = self.tree.item(item_id, "text")
+        item_values = self.tree.item(item_id, "values")
 
+        if not item_values:
+            return
 
-def search_patterns(search_text: str):
-    """
-    Search group names, pattern names, intent, and mental model.
-    """
-    search_text = search_text.lower().strip()
+        item_type = item_values[0]
 
-    if not search_text:
-        return get_all_patterns()
+        if item_type == "group":
+            self.show_group_details(item_text)
 
-    results = []
+        elif item_type == "pattern":
+            group_name = item_values[1]
+            self.show_pattern_details(group_name, item_text)
 
-    for item in get_all_patterns():
-        searchable = " ".join([
-            str(item.get("group", "")),
-            str(item.get("pattern", "")),
-            str(item.get("memory_shortcut", "")),
-            str(item.get("core_intent", "")),
-            str(item.get("mental_model", "")),
-            " ".join(item.get("observable_patterns", [])),
-            " ".join(item.get("surveillance_questions", [])),
-            " ".join(item.get("recommended_charts", [])),
-        ]).lower()
+    def show_group_details(self, group_name):
+        group = get_group(group_name)
 
-        if search_text in searchable:
-            results.append(item)
+        if not group:
+            return
 
-    return results
+        text = ""
+        text += f"GROUP: {group_name}\n\n"
+        text += f"Memory Shortcut:\n{group.get('memory_shortcut', '')}\n\n"
+        text += f"Core Intent:\n{group.get('core_intent', '')}\n\n"
+        text += f"Mental Model:\n{group.get('mental_model', '')}\n\n"
 
+        text += "Patterns:\n"
+        for pattern in group.get("patterns", []):
+            text += f"  - {pattern}\n"
 
-def count_pattern_entries():
-    """
-    Count all pattern entries, including duplicates across groups.
-    """
-    return len(get_all_patterns())
+        text += "\nObservable Patterns:\n"
+        for item in group.get("observable_patterns", []):
+            text += f"  - {item}\n"
 
+        text += "\nSurveillance Questions:\n"
+        for item in group.get("surveillance_questions", []):
+            text += f"  - {item}\n"
 
-def count_unique_patterns():
-    """
-    Count unique pattern names.
-    """
-    return len(get_unique_patterns())
+        text += "\nRecommended Charts:\n"
+        for item in group.get("recommended_charts", []):
+            text += f"  - {item}\n"
 
+        self.update_details(text)
 
-# Placeholder detector map.
-# Later this will connect pattern names to detector functions/classes.
-DETECTOR_REGISTRY = {
-    "Spoofing": None,
-    "Layering": None,
-    "Quote Stuffing": None,
-    "Wash Trades": None,
-    "Painting the Tape": None,
-    "Front Running": None,
-    "Insider Trading": None,
-    "Marking the Close": None,
-    "Ramping": None,
-    "Benchmark Manipulation": None,
-}
+    def show_pattern_details(self, group_name, pattern_name):
+        group = get_group(group_name)
 
+        if not group:
+            return
 
-def get_detector(pattern_name: str):
-    """
-    Return detector assigned to a pattern.
-    Currently returns None until detector modules are built.
-    """
-    return DETECTOR_REGISTRY.get(pattern_name)
+        text = ""
+        text += f"PATTERN: {pattern_name}\n\n"
+        text += f"GROUP: {group_name}\n\n"
+        text += f"Group Memory Shortcut:\n{group.get('memory_shortcut', '')}\n\n"
+        text += f"Core Intent:\n{group.get('core_intent', '')}\n\n"
+        text += f"Mental Model:\n{group.get('mental_model', '')}\n\n"
 
+        text += "Likely Observable Footprints:\n"
+        for item in group.get("observable_patterns", []):
+            text += f"  - {item}\n"
 
-def has_detector(pattern_name: str):
-    """
-    Return True if a detector has been registered.
-    """
-    return DETOR_REGISTRY.get(pattern_name) is not None
+        text += "\nInvestigation Questions:\n"
+        for item in group.get("surveillance_questions", []):
+            text += f"  - {item}\n"
+
+        text += "\nRecommended Charts:\n"
+        for item in group.get("recommended_charts", []):
+            text += f"  - {item}\n"
+
+        self.update_details(text)
+
+    def update_details(self, text):
+        self.details_text.delete("1.0", tk.END)
+        self.details_text.insert(tk.END, text)
