@@ -1,161 +1,85 @@
-import tkinter as tk
-from tkinter import ttk
 
-from surveillance.registry import (
-    get_all_groups,
-    get_group,
-)
+"""
+surveillance/base.py
+
+Common base structure for all surveillance detectors.
+
+Each market abuse detector should follow this format so the app can:
+- run detectors consistently
+- validate required columns
+- return alerts in a standard format
+- support charts, exports, reports, and audit logs
+"""
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+import polars as pl
 
 
-class SurveillancePanel(ttk.Frame):
+@dataclass
+class DetectionResult:
+    pattern_name: str
+    group_name: str
+    alert_count: int
+    alerts: Optional[pl.DataFrame] = None
+    summary: Dict[str, Any] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
+
+
+class BaseDetector:
     """
-    Tkinter panel for viewing surveillance groups and abuse patterns.
+    Parent class for all surveillance detectors.
     """
 
-    def __init__(self, parent):
-        super().__init__(parent)
+    pattern_name = "Base Detector"
+    group_name = "Unassigned"
+    description = ""
+    required_columns = []
+    recommended_charts = []
 
-        self.groups = get_all_groups()
+    def __init__(self, rules: Optional[Dict[str, Any]] = None):
+        self.rules = rules or {}
 
-        self.build_layout()
-        self.populate_tree()
+    def validate_columns(self, df: pl.DataFrame):
+        missing = [
+            col for col in self.required_columns
+            if col not in df.columns
+        ]
 
-    def build_layout(self):
-        self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=2)
-        self.rowconfigure(0, weight=1)
+        return missing
 
-        left_frame = ttk.Frame(self)
-        left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    def can_run(self, df: pl.DataFrame):
+        return len(self.validate_columns(df)) == 0
 
-        right_frame = ttk.Frame(self)
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
-
-        ttk.Label(
-            left_frame,
-            text="Market Abuse Groups",
-            font=("Arial", 12, "bold"),
-        ).pack(anchor="w", pady=(0, 5))
-
-        self.tree = ttk.Treeview(left_frame)
-        self.tree.pack(fill="both", expand=True)
-
-        self.tree.heading("#0", text="Surveillance Patterns", anchor="w")
-
-        self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
-
-        ttk.Label(
-            right_frame,
-            text="Pattern / Group Details",
-            font=("Arial", 12, "bold"),
-        ).pack(anchor="w", pady=(0, 5))
-
-        self.details_text = tk.Text(
-            right_frame,
-            wrap="word",
-            height=30,
+    def detect(self, df: pl.DataFrame) -> DetectionResult:
+        """
+        Override this method in each detector.
+        """
+        raise NotImplementedError(
+            f"{self.pattern_name} detector has not implemented detect()."
         )
-        self.details_text.pack(fill="both", expand=True)
 
-    def populate_tree(self):
-        self.tree.delete(*self.tree.get_children())
+    def empty_result(self, notes=None) -> DetectionResult:
+        return DetectionResult(
+            pattern_name=self.pattern_name,
+            group_name=self.group_name,
+            alert_count=0,
+            alerts=None,
+            summary={},
+            notes=notes or [],
+        )
 
-        for group_name, group_data in self.groups.items():
-            group_node = self.tree.insert(
-                "",
-                "end",
-                text=group_name,
-                values=("group",),
-                open=False,
-            )
-
-            for pattern in group_data.get("patterns", []):
-                self.tree.insert(
-                    group_node,
-                    "end",
-                    text=pattern,
-                    values=("pattern", group_name),
-                )
-
-    def on_tree_select(self, event):
-        selected = self.tree.selection()
-
-        if not selected:
-            return
-
-        item_id = selected[0]
-        item_text = self.tree.item(item_id, "text")
-        item_values = self.tree.item(item_id, "values")
-
-        if not item_values:
-            return
-
-        item_type = item_values[0]
-
-        if item_type == "group":
-            self.show_group_details(item_text)
-
-        elif item_type == "pattern":
-            group_name = item_values[1]
-            self.show_pattern_details(group_name, item_text)
-
-    def show_group_details(self, group_name):
-        group = get_group(group_name)
-
-        if not group:
-            return
-
-        text = ""
-        text += f"GROUP: {group_name}\n\n"
-        text += f"Memory Shortcut:\n{group.get('memory_shortcut', '')}\n\n"
-        text += f"Core Intent:\n{group.get('core_intent', '')}\n\n"
-        text += f"Mental Model:\n{group.get('mental_model', '')}\n\n"
-
-        text += "Patterns:\n"
-        for pattern in group.get("patterns", []):
-            text += f"  - {pattern}\n"
-
-        text += "\nObservable Patterns:\n"
-        for item in group.get("observable_patterns", []):
-            text += f"  - {item}\n"
-
-        text += "\nSurveillance Questions:\n"
-        for item in group.get("surveillance_questions", []):
-            text += f"  - {item}\n"
-
-        text += "\nRecommended Charts:\n"
-        for item in group.get("recommended_charts", []):
-            text += f"  - {item}\n"
-
-        self.update_details(text)
-
-    def show_pattern_details(self, group_name, pattern_name):
-        group = get_group(group_name)
-
-        if not group:
-            return
-
-        text = ""
-        text += f"PATTERN: {pattern_name}\n\n"
-        text += f"GROUP: {group_name}\n\n"
-        text += f"Group Memory Shortcut:\n{group.get('memory_shortcut', '')}\n\n"
-        text += f"Core Intent:\n{group.get('core_intent', '')}\n\n"
-        text += f"Mental Model:\n{group.get('mental_model', '')}\n\n"
-
-        text += "Likely Observable Footprints:\n"
-        for item in group.get("observable_patterns", []):
-            text += f"  - {item}\n"
-
-        text += "\nInvestigation Questions:\n"
-        for item in group.get("surveillance_questions", []):
-            text += f"  - {item}\n"
-
-        text += "\nRecommended Charts:\n"
-        for item in group.get("recommended_charts", []):
-            text += f"  - {item}\n"
-
-        self.update_details(text)
-
-    def update_details(self, text):
-        self.details_text.delete("1.0", tk.END)
-        self.details_text.insert(tk.END, text)
+    def result(
+        self,
+        alerts: pl.DataFrame,
+        summary: Optional[Dict[str, Any]] = None,
+        notes: Optional[List[str]] = None,
+    ) -> DetectionResult:
+        return DetectionResult(
+            pattern_name=self.pattern_name,
+            group_name=self.group_name,
+            alert_count=alerts.height if alerts is not None else 0,
+            alerts=alerts,
+            summary=summary or {},
+            notes=notes or [],
+        )
