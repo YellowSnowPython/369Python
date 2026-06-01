@@ -1,85 +1,20 @@
 
-"""
-surveillance/base.py
-
-Common base structure for all surveillance detectors.
-
-Each market abuse detector should follow this format so the app can:
-- run detectors consistently
-- validate required columns
-- return alerts in a standard format
-- support charts, exports, reports, and audit logs
-"""
-
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 import polars as pl
 
 
-@dataclass
-class DetectionResult:
-    pattern_name: str
-    group_name: str
-    alert_count: int
-    alerts: Optional[pl.DataFrame] = None
-    summary: Dict[str, Any] = field(default_factory=dict)
-    notes: List[str] = field(default_factory=list)
+def reorder_columns(df: pl.DataFrame, column_order: list[str]) -> pl.DataFrame:
+    existing = [col for col in column_order if col in df.columns]
+    remaining = [col for col in df.columns if col not in existing]
+    return df.select(existing + remaining)
 
 
-class BaseDetector:
-    """
-    Parent class for all surveillance detectors.
-    """
+def remove_columns(df: pl.DataFrame, columns_to_remove: list[str]) -> pl.DataFrame:
+    keep_columns = [col for col in df.columns if col not in columns_to_remove]
+    return df.select(keep_columns)
 
-    pattern_name = "Base Detector"
-    group_name = "Unassigned"
-    description = ""
-    required_columns = []
-    recommended_charts = []
 
-    def __init__(self, rules: Optional[Dict[str, Any]] = None):
-        self.rules = rules or {}
+def rename_column(df: pl.DataFrame, old_name: str, new_name: str) -> pl.DataFrame:
+    if old_name not in df.columns:
+        return df
 
-    def validate_columns(self, df: pl.DataFrame):
-        missing = [
-            col for col in self.required_columns
-            if col not in df.columns
-        ]
-
-        return missing
-
-    def can_run(self, df: pl.DataFrame):
-        return len(self.validate_columns(df)) == 0
-
-    def detect(self, df: pl.DataFrame) -> DetectionResult:
-        """
-        Override this method in each detector.
-        """
-        raise NotImplementedError(
-            f"{self.pattern_name} detector has not implemented detect()."
-        )
-
-    def empty_result(self, notes=None) -> DetectionResult:
-        return DetectionResult(
-            pattern_name=self.pattern_name,
-            group_name=self.group_name,
-            alert_count=0,
-            alerts=None,
-            summary={},
-            notes=notes or [],
-        )
-
-    def result(
-        self,
-        alerts: pl.DataFrame,
-        summary: Optional[Dict[str, Any]] = None,
-        notes: Optional[List[str]] = None,
-    ) -> DetectionResult:
-        return DetectionResult(
-            pattern_name=self.pattern_name,
-            group_name=self.group_name,
-            alert_count=alerts.height if alerts is not None else 0,
-            alerts=alerts,
-            summary=summary or {},
-            notes=notes or [],
-        )
+    return df.rename({old_name: new_name})
