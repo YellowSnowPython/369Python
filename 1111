@@ -18,3 +18,197 @@ def rename_column(df: pl.DataFrame, old_name: str, new_name: str) -> pl.DataFram
         return df
 
     return df.rename({old_name: new_name})
+
+
+
+column_manager
+
+
+
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+
+from core.column_tools import reorder_columns, remove_columns, rename_column
+
+
+class ColumnManager(ttk.Frame):
+    def __init__(self, parent, get_dataframe_callback, set_dataframe_callback):
+        super().__init__(parent)
+
+        self.get_dataframe = get_dataframe_callback
+        self.set_dataframe = set_dataframe_callback
+
+        self.dragged_item = None
+
+        self.build_layout()
+
+    def build_layout(self):
+        title = ttk.Label(
+            self,
+            text="Combine / Edit Column Layout",
+            font=("Arial", 13, "bold"),
+        )
+        title.pack(anchor="w", padx=10, pady=10)
+
+        instructions = ttk.Label(
+            self,
+            text="Drag columns up/down to reorder. Right-click to rename or remove.",
+        )
+        instructions.pack(anchor="w", padx=10)
+
+        self.column_list = tk.Listbox(
+            self,
+            selectmode=tk.SINGLE,
+            height=25,
+            width=50,
+        )
+        self.column_list.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.column_list.bind("<ButtonPress-1>", self.on_drag_start)
+        self.column_list.bind("<B1-Motion>", self.on_drag_motion)
+        self.column_list.bind("<ButtonRelease-1>", self.on_drag_drop)
+        self.column_list.bind("<Button-3>", self.show_context_menu)
+
+        button_frame = ttk.Frame(self)
+        button_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Button(
+            button_frame,
+            text="Refresh Columns",
+            command=self.refresh_columns,
+        ).pack(side="left", padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Apply Column Order",
+            command=self.apply_column_order,
+        ).pack(side="left", padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Remove Selected",
+            command=self.remove_selected_column,
+        ).pack(side="left", padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Rename Selected",
+            command=self.rename_selected_column,
+        ).pack(side="left", padx=5)
+
+        self.context_menu = tk.Menu(self, tearoff=0)
+        self.context_menu.add_command(label="Rename", command=self.rename_selected_column)
+        self.context_menu.add_command(label="Remove", command=self.remove_selected_column)
+
+    def refresh_columns(self):
+        df = self.get_dataframe()
+
+        if df is None:
+            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
+            return
+
+        self.column_list.delete(0, tk.END)
+
+        for col in df.columns:
+            self.column_list.insert(tk.END, col)
+
+    def on_drag_start(self, event):
+        self.dragged_item = self.column_list.nearest(event.y)
+
+    def on_drag_motion(self, event):
+        if self.dragged_item is None:
+            return
+
+        new_index = self.column_list.nearest(event.y)
+
+        if new_index == self.dragged_item:
+            return
+
+        value = self.column_list.get(self.dragged_item)
+        self.column_list.delete(self.dragged_item)
+        self.column_list.insert(new_index, value)
+
+        self.dragged_item = new_index
+        self.column_list.selection_clear(0, tk.END)
+        self.column_list.selection_set(new_index)
+
+    def on_drag_drop(self, event):
+        self.dragged_item = None
+
+    def get_column_order(self):
+        return list(self.column_list.get(0, tk.END))
+
+    def apply_column_order(self):
+        df = self.get_dataframe()
+
+        if df is None:
+            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
+            return
+
+        new_order = self.get_column_order()
+        updated_df = reorder_columns(df, new_order)
+
+        self.set_dataframe(updated_df)
+
+        messagebox.showinfo("Applied", "Column order applied to current dataset.")
+
+    def remove_selected_column(self):
+        df = self.get_dataframe()
+
+        if df is None:
+            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
+            return
+
+        selected = self.column_list.curselection()
+
+        if not selected:
+            return
+
+        col = self.column_list.get(selected[0])
+
+        confirm = messagebox.askyesno(
+            "Remove Column",
+            f"Remove column '{col}' from current dataset?",
+        )
+
+        if not confirm:
+            return
+
+        updated_df = remove_columns(df, [col])
+        self.set_dataframe(updated_df)
+        self.refresh_columns()
+
+    def rename_selected_column(self):
+        df = self.get_dataframe()
+
+        if df is None:
+            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
+            return
+
+        selected = self.column_list.curselection()
+
+        if not selected:
+            return
+
+        old_name = self.column_list.get(selected[0])
+
+        new_name = simpledialog.askstring(
+            "Rename Column",
+            f"Rename '{old_name}' to:",
+        )
+
+        if not new_name:
+            return
+
+        updated_df = rename_column(df, old_name, new_name)
+        self.set_dataframe(updated_df)
+        self.refresh_columns()
+
+    def show_context_menu(self, event):
+        index = self.column_list.nearest(event.y)
+        self.column_list.selection_clear(0, tk.END)
+        self.column_list.selection_set(index)
+        self.context_menu.tk_popup(event.x_root, event.y_root)
+
+
+
