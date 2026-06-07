@@ -1,214 +1,123 @@
 
-import polars as pl
-
-
-def reorder_columns(df: pl.DataFrame, column_order: list[str]) -> pl.DataFrame:
-    existing = [col for col in column_order if col in df.columns]
-    remaining = [col for col in df.columns if col not in existing]
-    return df.select(existing + remaining)
-
-
-def remove_columns(df: pl.DataFrame, columns_to_remove: list[str]) -> pl.DataFrame:
-    keep_columns = [col for col in df.columns if col not in columns_to_remove]
-    return df.select(keep_columns)
-
-
-def rename_column(df: pl.DataFrame, old_name: str, new_name: str) -> pl.DataFrame:
-    if old_name not in df.columns:
-        return df
-
-    return df.rename({old_name: new_name})
-
-
-
-column_manager
-
-
-
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-
-from core.column_tools import reorder_columns, remove_columns, rename_column
-
-
-class ColumnManager(ttk.Frame):
-    def __init__(self, parent, get_dataframe_callback, set_dataframe_callback):
-        super().__init__(parent)
-
-        self.get_dataframe = get_dataframe_callback
-        self.set_dataframe = set_dataframe_callback
-
-        self.dragged_item = None
-
-        self.build_layout()
-
-    def build_layout(self):
-        title = ttk.Label(
-            self,
-            text="Combine / Edit Column Layout",
-            font=("Arial", 13, "bold"),
-        )
-        title.pack(anchor="w", padx=10, pady=10)
-
-        instructions = ttk.Label(
-            self,
-            text="Drag columns up/down to reorder. Right-click to rename or remove.",
-        )
-        instructions.pack(anchor="w", padx=10)
-
-        self.column_list = tk.Listbox(
-            self,
-            selectmode=tk.SINGLE,
-            height=25,
-            width=50,
-        )
-        self.column_list.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self.column_list.bind("<ButtonPress-1>", self.on_drag_start)
-        self.column_list.bind("<B1-Motion>", self.on_drag_motion)
-        self.column_list.bind("<ButtonRelease-1>", self.on_drag_drop)
-        self.column_list.bind("<Button-3>", self.show_context_menu)
-
-        button_frame = ttk.Frame(self)
-        button_frame.pack(fill="x", padx=10, pady=5)
-
-        ttk.Button(
-            button_frame,
-            text="Refresh Columns",
-            command=self.refresh_columns,
-        ).pack(side="left", padx=5)
-
-        ttk.Button(
-            button_frame,
-            text="Apply Column Order",
-            command=self.apply_column_order,
-        ).pack(side="left", padx=5)
-
-        ttk.Button(
-            button_frame,
-            text="Remove Selected",
-            command=self.remove_selected_column,
-        ).pack(side="left", padx=5)
-
-        ttk.Button(
-            button_frame,
-            text="Rename Selected",
-            command=self.rename_selected_column,
-        ).pack(side="left", padx=5)
-
-        self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="Rename", command=self.rename_selected_column)
-        self.context_menu.add_command(label="Remove", command=self.remove_selected_column)
-
-    def refresh_columns(self):
-        df = self.get_dataframe()
-
-        if df is None:
-            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
-            return
-
-        self.column_list.delete(0, tk.END)
-
-        for col in df.columns:
-            self.column_list.insert(tk.END, col)
-
-    def on_drag_start(self, event):
-        self.dragged_item = self.column_list.nearest(event.y)
-
-    def on_drag_motion(self, event):
-        if self.dragged_item is None:
-            return
-
-        new_index = self.column_list.nearest(event.y)
-
-        if new_index == self.dragged_item:
-            return
-
-        value = self.column_list.get(self.dragged_item)
-        self.column_list.delete(self.dragged_item)
-        self.column_list.insert(new_index, value)
-
-        self.dragged_item = new_index
-        self.column_list.selection_clear(0, tk.END)
-        self.column_list.selection_set(new_index)
-
-    def on_drag_drop(self, event):
-        self.dragged_item = None
-
-    def get_column_order(self):
-        return list(self.column_list.get(0, tk.END))
-
-    def apply_column_order(self):
-        df = self.get_dataframe()
-
-        if df is None:
-            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
-            return
-
-        new_order = self.get_column_order()
-        updated_df = reorder_columns(df, new_order)
-
-        self.set_dataframe(updated_df)
-
-        messagebox.showinfo("Applied", "Column order applied to current dataset.")
-
-    def remove_selected_column(self):
-        df = self.get_dataframe()
-
-        if df is None:
-            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
-            return
-
-        selected = self.column_list.curselection()
-
-        if not selected:
-            return
-
-        col = self.column_list.get(selected[0])
-
-        confirm = messagebox.askyesno(
-            "Remove Column",
-            f"Remove column '{col}' from current dataset?",
-        )
-
-        if not confirm:
-            return
-
-        updated_df = remove_columns(df, [col])
-        self.set_dataframe(updated_df)
-        self.refresh_columns()
-
-    def rename_selected_column(self):
-        df = self.get_dataframe()
-
-        if df is None:
-            messagebox.showwarning("No Dataset", "Create or load a dataset first.")
-            return
-
-        selected = self.column_list.curselection()
-
-        if not selected:
-            return
-
-        old_name = self.column_list.get(selected[0])
-
-        new_name = simpledialog.askstring(
-            "Rename Column",
-            f"Rename '{old_name}' to:",
-        )
-
-        if not new_name:
-            return
-
-        updated_df = rename_column(df, old_name, new_name)
-        self.set_dataframe(updated_df)
-        self.refresh_columns()
-
-    def show_context_menu(self, event):
-        index = self.column_list.nearest(event.y)
-        self.column_list.selection_clear(0, tk.END)
-        self.column_list.selection_set(index)
-        self.context_menu.tk_popup(event.x_root, event.y_root)
-
-
-
+Option Explicit
+
+Sub FilterOrdersToTemplate()
+
+    Dim wsT As Worksheet, wsO As Worksheet
+    Dim src As Variant, outArr() As Variant
+    Dim lastRow As Long, lastCol As Long
+    Dim r As Long, c As Long, outRow As Long
+    Dim headers As Object, filters As Object
+    Dim keepRow As Boolean
+    Dim key As Variant
+    
+    Set wsT = ThisWorkbook.Worksheets("Template")
+    Set wsO = ThisWorkbook.Worksheets("Order")
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    
+    lastRow = wsO.Cells(wsO.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsO.Cells(1, wsO.Columns.Count).End(xlToLeft).Column
+    
+    If lastRow < 2 Then GoTo CleanExit
+    
+    src = wsO.Range(wsO.Cells(1, 1), wsO.Cells(lastRow, lastCol)).Value
+    
+    Set headers = CreateObject("Scripting.Dictionary")
+    For c = 1 To lastCol
+        headers(CStr(src(1, c))) = c
+    Next c
+    
+    Set filters = CreateObject("Scripting.Dictionary")
+    
+    'Template cell -> Order tab column header
+    AddFilter filters, "Order Type", wsT.Range("B2").Value
+    AddFilter filters, "Order Status", wsT.Range("B3").Value
+    AddFilter filters, "Price", wsT.Range("B4").Value
+    AddFilter filters, "Quote Type", wsT.Range("B5").Value
+    AddFilter filters, "Side", wsT.Range("B6").Value
+    AddFilter filters, "Execution Terms", wsT.Range("B7").Value
+    
+    ReDim outArr(1 To lastRow, 1 To lastCol)
+    
+    'Copy headers
+    For c = 1 To lastCol
+        outArr(1, c) = src(1, c)
+    Next c
+    
+    outRow = 1
+    
+    For r = 2 To UBound(src, 1)
+        keepRow = True
+        
+        For Each key In filters.Keys
+            If headers.Exists(CStr(key)) Then
+                If Not MatchFilter(src(r, headers(key)), filters(key)) Then
+                    keepRow = False
+                    Exit For
+                End If
+            End If
+        Next key
+        
+        If keepRow Then
+            outRow = outRow + 1
+            For c = 1 To lastCol
+                outArr(outRow, c) = src(r, c)
+            Next c
+        End If
+    Next r
+    
+    wsT.Range("A10").Resize(wsT.Rows.Count - 9, lastCol).ClearContents
+    
+    If outRow >= 1 Then
+        wsT.Range("A10").Resize(outRow, lastCol).Value = outArr
+    End If
+
+CleanExit:
+    Application.Calculation = xlCalculationAutomatic
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub AddFilter(ByRef filters As Object, ByVal fieldName As String, ByVal criteria As String)
+
+    criteria = Trim(CStr(criteria))
+    
+    If criteria <> "" And LCase(criteria) <> "all" Then
+        filters(fieldName) = SplitCriteria(criteria)
+    End If
+
+End Sub
+
+Private Function SplitCriteria(ByVal criteria As String) As Object
+
+    Dim dict As Object
+    Dim arr As Variant
+    Dim i As Long
+    Dim item As String
+    
+    Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = vbTextCompare
+    
+    arr = Split(criteria, ",")
+    
+    For i = LBound(arr) To UBound(arr)
+        item = Trim(CStr(arr(i)))
+        If item <> "" Then dict(item) = True
+    Next i
+    
+    Set SplitCriteria = dict
+
+End Function
+
+Private Function MatchFilter(ByVal cellValue As Variant, ByVal allowedValues As Object) As Boolean
+
+    Dim v As String
+    v = Trim(CStr(cellValue))
+    
+    MatchFilter = allowedValues.Exists(v)
+
+End Function
